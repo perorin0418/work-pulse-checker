@@ -1,0 +1,38 @@
+[package]
+name = "work-pulse-checker"
+version = "0.1.0"
+description = "A tray-resident desktop app for confirming work every 30 minutes"
+authors = ["Copilot"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "work_pulse_checker_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+parking_lot = "0.12"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.3", features = ["tray-icon", "image-png", "custom-protocol"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-log = "2"
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
+] }
