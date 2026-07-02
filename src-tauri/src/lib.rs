@@ -23,8 +23,6 @@ const SLEEP_RESUME_GAP_SECONDS: i64 = 15;
 const POST_SLEEP_AWAY_SECONDS: i64 = 15;
 const HISTORY_WINDOW_WIDTH: f64 = 1300.0;
 const HISTORY_WINDOW_HEIGHT: f64 = 1000.0;
-const PROMPT_WINDOW_WIDTH: f64 = 620.0;
-const PROMPT_WINDOW_HEIGHT: f64 = 560.0;
 
 #[derive(Clone)]
 struct AppState {
@@ -355,7 +353,7 @@ fn show_prompt(app: &AppHandle, interval: &WorkInterval) -> Result<()> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| anyhow::anyhow!("main window not found"))?;
-    window.set_size(LogicalSize::new(PROMPT_WINDOW_WIDTH, PROMPT_WINDOW_HEIGHT))?;
+    window.set_size(LogicalSize::new(HISTORY_WINDOW_WIDTH, HISTORY_WINDOW_HEIGHT))?;
     window.show()?;
     window.unminimize()?;
     window.center()?;
