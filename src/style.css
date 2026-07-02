@@ -291,7 +291,10 @@ input:focus-visible {
 }
 
 dialog {
-  width: min(640px, calc(100vw - 32px));
+  inline-size: min(1300px, calc(100vw - 32px));
+  block-size: min(1000px, calc(100vh - 32px));
+  max-inline-size: none;
+  max-block-size: none;
   border: none;
   padding: 0;
   color: inherit;
@@ -304,6 +307,9 @@ dialog::backdrop {
 }
 
 .dialog-shell {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
   border: 1px solid var(--border);
   border-radius: 28px;
   background: var(--surface-strong);
@@ -316,6 +322,8 @@ dialog::backdrop {
 }
 
 .dialog-body {
+  flex: 1;
+  overflow: auto;
   padding: 0 24px 24px;
 }
 
