@@ -1,0 +1,353 @@
+:root {
+  color-scheme: light dark;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #e8ecf3;
+  background: #111827;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --surface: rgba(17, 24, 39, 0.92);
+  --surface-strong: rgba(30, 41, 59, 0.95);
+  --surface-soft: rgba(51, 65, 85, 0.55);
+  --border: rgba(148, 163, 184, 0.24);
+  --text-subtle: #a8b3c8;
+  --accent: #7c3aed;
+  --accent-strong: #8b5cf6;
+  --accent-soft: rgba(124, 58, 237, 0.18);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top, rgba(124, 58, 237, 0.2), transparent 35%),
+    linear-gradient(180deg, #0f172a, #111827);
+}
+
+button,
+textarea,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+textarea {
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.82);
+  color: inherit;
+  padding: 14px 16px;
+  resize: vertical;
+}
+
+textarea:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.shell {
+  width: min(1120px, 100%);
+  margin: 0 auto;
+  padding: 32px 24px 48px;
+}
+
+.loading-shell {
+  display: grid;
+  place-items: center;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: start;
+  margin-bottom: 24px;
+}
+
+.topbar h1,
+.dialog-header h2,
+.settings-card h2,
+.interval-card h3 {
+  margin: 0;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: #c4b5fd;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.8rem;
+}
+
+.body-copy,
+.muted {
+  color: var(--text-subtle);
+}
+
+.topbar-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--text-subtle);
+  text-align: right;
+}
+
+.tabs {
+  display: inline-flex;
+  gap: 8px;
+  padding: 6px;
+  background: rgba(15, 23, 42, 0.78);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+.tab {
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-subtle);
+  padding: 10px 18px;
+}
+
+.tab.is-active {
+  background: var(--accent-soft);
+  color: #f5f3ff;
+}
+
+.panel-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.interval-card,
+.settings-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 20px;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.35);
+}
+
+.interval-header,
+.card-footer,
+.dialog-header,
+.dialog-footer,
+.checkbox-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+
+.interval-meta {
+  display: flex;
+  gap: 16px;
+  color: var(--text-subtle);
+  flex-wrap: wrap;
+  justify-content: end;
+}
+
+.slot-label {
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.85rem;
+}
+
+.status-confirmed {
+  background: rgba(22, 163, 74, 0.16);
+  color: #86efac;
+}
+
+.status-pending {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fcd34d;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.detail-grid,
+.summary-grid {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.detail-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.summary-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.pill-row,
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pill,
+.candidate-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  padding: 8px 12px;
+}
+
+.pill strong {
+  color: #ddd6fe;
+}
+
+.candidate-chip {
+  color: inherit;
+}
+
+.candidate-chip:hover {
+  border-color: rgba(196, 181, 253, 0.45);
+}
+
+.primary-button,
+.secondary-button,
+.compact-button,
+.icon-button {
+  border: none;
+  border-radius: 14px;
+  padding: 12px 16px;
+}
+
+.primary-button {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: white;
+}
+
+.secondary-button,
+.compact-button,
+.icon-button {
+  background: rgba(51, 65, 85, 0.65);
+  color: inherit;
+}
+
+.compact-button {
+  padding: 10px 14px;
+}
+
+.icon-button {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  font-size: 1.2rem;
+}
+
+.card-footer {
+  margin-top: 16px;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: end;
+}
+
+.checkbox-row {
+  justify-content: start;
+}
+
+.checkbox-row input {
+  inline-size: 18px;
+  block-size: 18px;
+}
+
+dialog {
+  width: min(640px, calc(100vw - 32px));
+  border: none;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+}
+
+dialog::backdrop {
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(8px);
+}
+
+.dialog-shell {
+  border: 1px solid var(--border);
+  border-radius: 28px;
+  background: var(--surface-strong);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.45);
+}
+
+.dialog-header,
+.dialog-footer {
+  padding: 20px 24px;
+}
+
+.dialog-body {
+  padding: 0 24px 24px;
+}
+
+.candidate-section {
+  margin-top: 16px;
+}
+
+@media (max-width: 800px) {
+  .shell {
+    padding: 20px 16px 32px;
+  }
+
+  .topbar,
+  .interval-header,
+  .card-footer,
+  .dialog-header,
+  .dialog-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .topbar-meta,
+  .interval-meta {
+    text-align: left;
+    justify-content: start;
+  }
+
+  .tabs {
+    width: 100%;
+  }
+
+  .tab {
+    flex: 1;
+  }
+}
