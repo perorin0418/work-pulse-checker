@@ -10,7 +10,6 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   --surface: rgba(17, 24, 39, 0.92);
-  --surface-strong: rgba(30, 41, 59, 0.95);
   --surface-soft: rgba(51, 65, 85, 0.55);
   --border: rgba(148, 163, 184, 0.24);
   --text-subtle: #a8b3c8;
@@ -92,7 +91,6 @@ input[type='date'] {
 }
 
 .topbar h1,
-.dialog-header h2,
 .settings-card h2,
 .interval-card h3 {
   margin: 0;
@@ -158,8 +156,6 @@ input[type='date'] {
 
 .interval-header,
 .card-footer,
-.dialog-header,
-.dialog-footer,
 .checkbox-row {
   display: flex;
   justify-content: space-between;
@@ -299,47 +295,6 @@ input[type='date'] {
   block-size: 18px;
 }
 
-dialog {
-  inline-size: min(1300px, calc(100vw - 32px));
-  block-size: min(1000px, calc(100vh - 32px));
-  max-inline-size: none;
-  max-block-size: none;
-  border: none;
-  padding: 0;
-  color: inherit;
-  background: transparent;
-}
-
-dialog::backdrop {
-  background: rgba(15, 23, 42, 0.72);
-  backdrop-filter: blur(8px);
-}
-
-.dialog-shell {
-  display: flex;
-  flex-direction: column;
-  block-size: 100%;
-  border: 1px solid var(--border);
-  border-radius: 28px;
-  background: var(--surface-strong);
-  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.45);
-}
-
-.dialog-header,
-.dialog-footer {
-  padding: 20px 24px;
-}
-
-.dialog-body {
-  flex: 1;
-  overflow: auto;
-  padding: 0 24px 24px;
-}
-
-.candidate-section {
-  margin-top: 16px;
-}
-
 @media (max-width: 800px) {
   .shell {
     padding: 20px 16px 32px;
@@ -347,9 +302,7 @@ dialog::backdrop {
 
   .topbar,
   .interval-header,
-  .card-footer,
-  .dialog-header,
-  .dialog-footer {
+  .card-footer {
     flex-direction: column;
     align-items: stretch;
   }
