@@ -59,7 +59,19 @@ type SettingsInput = {
   autostartEnabled: boolean
 }
 
-type AppView = 'history' | 'settings'
+type DailySummaryItem = {
+  label: string
+  minutes: number
+  slotCount: number
+}
+
+type DailySummary = {
+  date: string
+  totalMinutes: number
+  items: DailySummaryItem[]
+}
+
+type AppView = 'history' | 'settings' | 'summary'
 
 const app = document.querySelector<HTMLDivElement>('#app')
 
@@ -67,16 +79,26 @@ if (!app) {
   throw new Error('App root not found')
 }
 
+const todayDateString = () => {
+  const now = new Date()
+  const pad = (value: number) => value.toString().padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
 const state: {
   snapshot: Snapshot | null
   view: AppView
   promptSlotStart: string | null
   historyDrafts: Map<string, string>
+  summary: DailySummary | null
+  summaryDate: string
 } = {
   snapshot: null,
   view: 'history',
   promptSlotStart: null,
   historyDrafts: new Map(),
+  summary: null,
+  summaryDate: todayDateString(),
 }
 
 const formatDateTime = (value: string) =>
@@ -97,6 +119,8 @@ const formatSlot = (interval: WorkInterval) =>
   `${formatDateTime(interval.slotStart)} - ${formatEndTime(interval.slotEnd)}`
 
 const formatDuration = (seconds: number) => `${Math.round(seconds / 60)}分`
+
+const formatMinutes = (minutes: number) => `${minutes}分`
 
 const formatStatus = (sample: SampleOverview | null) => {
   if (!sample) {
@@ -305,6 +329,42 @@ const renderSettings = () => {
   `
 }
 
+const renderSummary = () => {
+  const summary = state.summary
+
+  return `
+    <section class="panel-stack">
+      <article class="settings-card">
+        <header>
+          <p class="eyebrow">日次サマリー</p>
+          <h2>指定日の作業サマリー</h2>
+        </header>
+        <label class="field">
+          <span>対象日</span>
+          <input type="date" id="summary-date-input" value="${state.summaryDate}" />
+        </label>
+      </article>
+      <article class="settings-card">
+        <h2>${summary ? `${summary.date} の合計: ${formatMinutes(summary.totalMinutes)}` : '読み込み中...'}</h2>
+        <div class="pill-row">
+          ${
+            summary
+              ? summary.items.length === 0
+                ? '<span class="muted">記録がありません</span>'
+                : summary.items
+                    .map(
+                      (item) =>
+                        `<span class="pill">${item.label}<strong>${formatMinutes(item.minutes)}</strong></span>`,
+                    )
+                    .join('')
+              : ''
+          }
+        </div>
+      </article>
+    </section>
+  `
+}
+
 const syncDialogState = () => {
   const dialog = document.querySelector<HTMLDialogElement>('#prompt-dialog')
 
@@ -346,9 +406,10 @@ const render = () => {
       </header>
       <nav class="tabs" aria-label="表示切替">
         <button type="button" class="${state.view === 'history' ? 'tab is-active' : 'tab'}" data-view="history">履歴</button>
+        <button type="button" class="${state.view === 'summary' ? 'tab is-active' : 'tab'}" data-view="summary">サマリー</button>
         <button type="button" class="${state.view === 'settings' ? 'tab is-active' : 'tab'}" data-view="settings">設定</button>
       </nav>
-      ${state.view === 'history' ? renderHistory() : renderSettings()}
+      ${state.view === 'history' ? renderHistory() : state.view === 'summary' ? renderSummary() : renderSettings()}
       ${renderPromptDialog()}
     </main>
   `
@@ -370,12 +431,28 @@ const confirmInterval = async (slotStart: string, text: string, fromPrompt: bool
   }
 }
 
+const loadSummary = async (date: string) => {
+  state.summaryDate = date
+  state.summary = await invoke<DailySummary>('get_daily_summary', { date })
+  render()
+}
+
 const wireInteractiveElements = () => {
   document.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((button) => {
     button.addEventListener('click', () => {
       state.view = button.dataset.view as AppView
       render()
+      if (state.view === 'summary') {
+        void loadSummary(state.summaryDate)
+      }
     })
+  })
+
+  document.querySelector<HTMLInputElement>('#summary-date-input')?.addEventListener('change', (event) => {
+    const value = (event.target as HTMLInputElement).value
+    if (value) {
+      void loadSummary(value)
+    }
   })
 
   document.querySelectorAll<HTMLTextAreaElement>('[data-history-slot]').forEach((textarea) => {
