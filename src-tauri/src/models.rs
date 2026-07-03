@@ -87,3 +87,19 @@ pub struct ActiveWindowInfo {
     pub process_name: String,
     pub is_fullscreen: bool,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailySummaryItem {
+    pub label: String,
+    pub minutes: i64,
+    pub slot_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailySummary {
+    pub date: String,
+    pub total_minutes: i64,
+    pub items: Vec<DailySummaryItem>,
+}

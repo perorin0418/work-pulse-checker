@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone};
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{
@@ -329,6 +329,34 @@ impl Database {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    pub fn intervals_for_date(&self, date: NaiveDate) -> Result<Vec<WorkInterval>> {
+        let connection = self.connection()?;
+        let start = Local
+            .from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+            .single()
+            .ok_or_else(|| anyhow!("invalid local date {}", date))?;
+        let end = start + Duration::days(1);
+
+        let mut statement = connection.prepare(
+            "SELECT slot_start, slot_end, status, predicted_text, predicted_candidates, confirmed_text, summary, snooze_until, last_prompt_at, prompt_count
+             FROM work_intervals
+             WHERE slot_start >= ? AND slot_start < ?
+             ORDER BY slot_start ASC",
+        )?;
+
+        let rows = statement.query_map(
+            params![start.to_rfc3339(), end.to_rfc3339()],
+            map_interval_row,
+        )?;
+        let mut intervals = Vec::new();
+
+        for row in rows {
+            intervals.push(row?);
+        }
+
+        Ok(intervals)
     }
 
     pub fn cleanup_expired_samples(&self) -> Result<()> {
