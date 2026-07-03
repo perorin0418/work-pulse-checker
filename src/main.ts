@@ -59,7 +59,7 @@ type SettingsInput = {
   autostartEnabled: boolean
 }
 
-type AppView = 'history' | 'settings'
+type AppView = 'history' | 'settings' | 'confirmation'
 
 const app = document.querySelector<HTMLDivElement>('#app')
 
@@ -133,7 +133,7 @@ const summaryList = (items: CountItem[], emptyText: string) => {
     .join('')
 }
 
-const renderPromptDialog = () => {
+const renderConfirmation = () => {
   const prompt =
     (state.promptSlotStart &&
       state.snapshot?.intervals.find((interval) => interval.slotStart === state.promptSlotStart)) ||
@@ -141,17 +141,16 @@ const renderPromptDialog = () => {
 
   if (!prompt) {
     return `
-      <dialog id="prompt-dialog">
-        <form method="dialog" class="dialog-shell">
-          <header class="dialog-header">
+      <section class="panel-stack">
+        <article class="interval-card">
+          <header class="interval-header">
             <div>
               <p class="eyebrow">30分確認</p>
               <h2>確認待ちの作業はありません</h2>
             </div>
-            <button class="icon-button" value="cancel" aria-label="閉じる">×</button>
           </header>
-        </form>
-      </dialog>
+        </article>
+      </section>
     `
   }
 
@@ -164,42 +163,42 @@ const renderPromptDialog = () => {
     .join('')
 
   return `
-    <dialog id="prompt-dialog" aria-labelledby="prompt-title">
-      <form method="dialog" class="dialog-shell">
-        <header class="dialog-header">
+    <section class="panel-stack">
+      <article class="interval-card" aria-labelledby="prompt-title">
+        <header class="interval-header">
           <div>
             <p class="eyebrow">30分確認</p>
             <h2 id="prompt-title">${formatSlot(prompt)}</h2>
           </div>
-          <button class="icon-button" value="cancel" aria-label="閉じる">×</button>
+          <button type="button" class="icon-button" id="close-prompt-button" aria-label="閉じる">×</button>
         </header>
-        <div class="dialog-body">
-          <p class="body-copy">直近30分の履歴から候補を作成しました。必要に応じて書き換えて確定してください。</p>
-          <label class="field">
-            <span>作業内容</span>
-            <textarea id="prompt-textarea" rows="5">${draft}</textarea>
-          </label>
-          <section class="candidate-section" aria-label="代替候補">
-            <h3>代替候補</h3>
-            <div class="chip-row">${candidates}</div>
-          </section>
-          <section class="summary-grid" aria-label="集計">
-            <article>
-              <h3>主なプロセス</h3>
-              <div class="pill-row">${summaryList(prompt.summary.topProcesses, '集計なし')}</div>
-            </article>
-            <article>
-              <h3>主なウィンドウ</h3>
-              <div class="pill-row">${summaryList(prompt.summary.topTitles, '集計なし')}</div>
-            </article>
-          </section>
+        <p class="body-copy">直近30分の履歴から候補を作成しました。必要に応じて書き換えて確定してください。</p>
+        <label class="field">
+          <span>作業内容</span>
+          <textarea id="prompt-textarea" rows="5">${draft}</textarea>
+        </label>
+        <section aria-label="代替候補">
+          <h3>代替候補</h3>
+          <div class="chip-row">${candidates}</div>
+        </section>
+      </article>
+      <article class="interval-card">
+        <div class="summary-grid" aria-label="集計">
+          <article>
+            <h3>主なプロセス</h3>
+            <div class="pill-row">${summaryList(prompt.summary.topProcesses, '集計なし')}</div>
+          </article>
+          <article>
+            <h3>主なウィンドウ</h3>
+            <div class="pill-row">${summaryList(prompt.summary.topTitles, '集計なし')}</div>
+          </article>
         </div>
-        <footer class="dialog-footer">
-          <button type="button" class="secondary-button" id="snooze-button">5分後に再通知</button>
-          <button type="button" class="primary-button" id="confirm-button">確定する</button>
-        </footer>
-      </form>
-    </dialog>
+      </article>
+      <div class="card-footer">
+        <button type="button" class="secondary-button" id="snooze-button">5分後に再通知</button>
+        <button type="button" class="primary-button" id="confirm-button">確定する</button>
+      </div>
+    </section>
   `
 }
 
@@ -305,22 +304,6 @@ const renderSettings = () => {
   `
 }
 
-const syncDialogState = () => {
-  const dialog = document.querySelector<HTMLDialogElement>('#prompt-dialog')
-
-  if (!dialog) {
-    return
-  }
-
-  if (state.promptSlotStart) {
-    if (!dialog.open) {
-      dialog.showModal()
-    }
-  } else if (dialog.open) {
-    dialog.close()
-  }
-}
-
 const render = () => {
   if (!state.snapshot) {
     app.innerHTML = `
@@ -347,19 +330,21 @@ const render = () => {
       <nav class="tabs" aria-label="表示切替">
         <button type="button" class="${state.view === 'history' ? 'tab is-active' : 'tab'}" data-view="history">履歴</button>
         <button type="button" class="${state.view === 'settings' ? 'tab is-active' : 'tab'}" data-view="settings">設定</button>
+        ${state.promptSlotStart ? `<button type="button" class="${state.view === 'confirmation' ? 'tab is-active' : 'tab'}" data-view="confirmation">確認</button>` : ''}
       </nav>
-      ${state.view === 'history' ? renderHistory() : renderSettings()}
-      ${renderPromptDialog()}
+      ${state.view === 'history' ? renderHistory() : state.view === 'settings' ? renderSettings() : renderConfirmation()}
     </main>
   `
 
   wireInteractiveElements()
-  syncDialogState()
 }
 
 const closePrompt = () => {
   state.promptSlotStart = null
-  syncDialogState()
+  if (state.view === 'confirmation') {
+    state.view = 'history'
+  }
+  render()
 }
 
 const confirmInterval = async (slotStart: string, text: string, fromPrompt: boolean) => {
@@ -452,10 +437,8 @@ const wireInteractiveElements = () => {
     closePrompt()
   })
 
-  document.querySelector<HTMLDialogElement>('#prompt-dialog')?.addEventListener('close', () => {
-    if (state.promptSlotStart) {
-      closePrompt()
-    }
+  document.querySelector<HTMLButtonElement>('#close-prompt-button')?.addEventListener('click', () => {
+    closePrompt()
   })
 
   document.querySelector<HTMLButtonElement>('#save-settings-button')?.addEventListener('click', async () => {
@@ -489,7 +472,7 @@ const refreshSnapshot = async () => {
 const bindBackendEvents = async () => {
   await listen<WorkInterval>('work-prompt', async (event) => {
     state.promptSlotStart = event.payload.slotStart
-    state.view = 'history'
+    state.view = 'confirmation'
     await refreshSnapshot()
   })
 
