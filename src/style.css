@@ -59,6 +59,15 @@ input:focus-visible {
   outline-offset: 2px;
 }
 
+input[type='date'] {
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.82);
+  color: inherit;
+  padding: 10px 14px;
+  color-scheme: dark;
+}
+
 #app {
   min-height: 100vh;
 }

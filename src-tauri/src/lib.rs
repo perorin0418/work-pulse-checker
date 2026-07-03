@@ -3,12 +3,14 @@ mod models;
 mod prediction;
 mod windows_activity;
 
-use std::{sync::Arc, thread, time::Duration as StdDuration};
+use std::{collections::HashMap, sync::Arc, thread, time::Duration as StdDuration};
 
 use anyhow::Result;
-use chrono::{DateTime, Duration, Local, Timelike};
+use chrono::{DateTime, Duration, Local, NaiveDate, Timelike};
 use db::{Database, RuntimeSettings};
-use models::{ActivitySampleRecord, SettingsInput, Snapshot, WorkInterval};
+use models::{
+    ActivitySampleRecord, DailySummary, DailySummaryItem, SettingsInput, Snapshot, WorkInterval,
+};
 use parking_lot::RwLock;
 use tauri::{
     image::Image,
@@ -90,7 +92,8 @@ pub fn run() {
             get_snapshot,
             save_settings,
             confirm_interval,
-            snooze_interval
+            snooze_interval,
+            get_daily_summary
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -398,6 +401,69 @@ fn get_snapshot(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<Sna
             })
         })
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_daily_summary(
+    state: tauri::State<'_, AppState>,
+    date: String,
+) -> Result<DailySummary, String> {
+    let parsed_date =
+        NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|error| error.to_string())?;
+
+    let intervals = state
+        .db
+        .intervals_for_date(parsed_date)
+        .map_err(|error| error.to_string())?;
+
+    Ok(summarize_day(&date, &intervals))
+}
+
+fn summarize_day(date: &str, intervals: &[WorkInterval]) -> DailySummary {
+    let mut order = Vec::new();
+    let mut totals: HashMap<String, (i64, usize)> = HashMap::new();
+
+    for interval in intervals {
+        let label = interval
+            .confirmed_text
+            .clone()
+            .unwrap_or_else(|| interval.predicted_text.clone());
+        let minutes = interval.summary.active_duration_seconds as i64 / 60;
+
+        let entry = totals.entry(label.clone()).or_insert_with(|| {
+            order.push(label.clone());
+            (0, 0)
+        });
+        entry.0 += minutes;
+        entry.1 += 1;
+    }
+
+    let mut items: Vec<DailySummaryItem> = order
+        .into_iter()
+        .map(|label| {
+            let (minutes, slot_count) = totals[&label];
+            DailySummaryItem {
+                label,
+                minutes,
+                slot_count,
+            }
+        })
+        .collect();
+
+    items.sort_by(|left, right| {
+        right
+            .minutes
+            .cmp(&left.minutes)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+
+    let total_minutes = items.iter().map(|item| item.minutes).sum();
+
+    DailySummary {
+        date: date.to_string(),
+        total_minutes,
+        items,
+    }
 }
 
 #[tauri::command]
