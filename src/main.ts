@@ -79,11 +79,12 @@ if (!app) {
   throw new Error('App root not found')
 }
 
-const todayDateString = () => {
-  const now = new Date()
+const formatDateKey = (date: Date) => {
   const pad = (value: number) => value.toString().padStart(2, '0')
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
+
+const todayDateString = () => formatDateKey(new Date())
 
 const state: {
   snapshot: Snapshot | null
@@ -147,6 +148,32 @@ const getDraft = (interval: WorkInterval) =>
   interval.confirmedText ??
   interval.predictedText
 
+const todaysConfirmedTexts = (excludeSlotStart?: string) => {
+  const today = todayDateString()
+  const seen = new Set<string>()
+  const results: string[] = []
+
+  for (const interval of state.snapshot?.intervals ?? []) {
+    if (interval.slotStart === excludeSlotStart) {
+      continue
+    }
+
+    if (formatDateKey(new Date(interval.slotStart)) !== today) {
+      continue
+    }
+
+    const text = interval.confirmedText?.trim()
+    if (!text || seen.has(text)) {
+      continue
+    }
+
+    seen.add(text)
+    results.push(text)
+  }
+
+  return results
+}
+
 const summaryList = (items: CountItem[], emptyText: string) => {
   if (items.length === 0) {
     return `<span class="muted">${emptyText}</span>`
@@ -185,6 +212,9 @@ const renderConfirmation = () => {
         `<button type="button" class="candidate-chip" data-candidate="${candidate}">${candidate}</button>`,
     )
     .join('')
+  const historyCandidates = todaysConfirmedTexts(prompt.slotStart).filter(
+    (text) => text !== prompt.predictedText && !prompt.predictedCandidates.includes(text),
+  )
 
   return `
     <section class="panel-stack">
@@ -205,6 +235,23 @@ const renderConfirmation = () => {
           <h3>代替候補</h3>
           <div class="chip-row">${candidates}</div>
         </section>
+        ${
+          historyCandidates.length > 0
+            ? `
+              <section aria-label="本日の入力履歴">
+                <h3>本日の入力履歴</h3>
+                <div class="chip-row">
+                  ${historyCandidates
+                    .map(
+                      (candidate) =>
+                        `<button type="button" class="candidate-chip" data-candidate="${candidate}">${candidate}</button>`,
+                    )
+                    .join('')}
+                </div>
+              </section>
+            `
+            : ''
+        }
       </article>
       <article class="interval-card">
         <div class="summary-grid" aria-label="集計">
@@ -235,6 +282,9 @@ const renderHistory = () => {
         .map((interval) => {
           const draft = getDraft(interval)
           const statusClass = interval.status === 'confirmed' ? 'status-confirmed' : 'status-pending'
+          const historyCandidates = todaysConfirmedTexts(interval.slotStart).filter(
+            (text) => text !== interval.predictedText && !interval.predictedCandidates.includes(text),
+          )
 
           return `
             <article class="interval-card">
@@ -268,6 +318,23 @@ const renderHistory = () => {
                       .join('')}
                   </div>
                 </section>
+                ${
+                  historyCandidates.length > 0
+                    ? `
+                      <section>
+                        <h3>本日の入力履歴</h3>
+                        <div class="chip-row">
+                          ${historyCandidates
+                            .map(
+                              (candidate) =>
+                                `<button type="button" class="candidate-chip" data-history-candidate="${interval.slotStart}::${candidate}">${candidate}</button>`,
+                            )
+                            .join('')}
+                        </div>
+                      </section>
+                    `
+                    : ''
+                }
               </div>
               <div class="summary-grid">
                 <article>
