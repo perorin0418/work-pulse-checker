@@ -17,7 +17,7 @@
         "width": 1300,
         "height": 1000,
         "visible": false,
-        "skipTaskbar": true,
+        "skipTaskbar": false,
         "center": true,
         "resizable": true,
         "fullscreen": false
