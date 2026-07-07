@@ -360,9 +360,8 @@ fn show_prompt(app: &AppHandle, interval: &WorkInterval) -> Result<()> {
     window.show()?;
     window.unminimize()?;
     window.center()?;
-    window.set_always_on_top(true)?;
-    let _ = window.request_user_attention(Some(UserAttentionType::Critical));
     window.set_focus()?;
+    let _ = window.request_user_attention(Some(UserAttentionType::Critical));
     app.emit("navigate", NavigatePayload { view: "history" })?;
     app.emit("work-prompt", interval.clone())?;
     Ok(())
