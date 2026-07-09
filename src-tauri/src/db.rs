@@ -251,6 +251,63 @@ impl Database {
         Ok(())
     }
 
+    pub fn backfill_missed_intervals(&self, current_slot_start: DateTime<Local>) -> Result<()> {
+        let connection = self.connection()?;
+
+        let last_known: Option<String> = connection.query_row(
+            "SELECT MAX(slot_start) FROM (
+                SELECT slot_start FROM activity_samples
+                UNION
+                SELECT slot_start FROM work_intervals
+            )",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let Some(last_known) = last_known else {
+            return Ok(());
+        };
+
+        let mut slot = parse_local(&last_known)? + Duration::minutes(30);
+        let history = self.confirmed_history(48)?;
+        let now = Local::now().to_rfc3339();
+        let empty_summary = SlotSummary {
+            sample_count: 0,
+            away_count: 0,
+            excluded_count: 0,
+            active_duration_seconds: 0,
+            top_processes: Vec::new(),
+            top_titles: Vec::new(),
+            top_title_tokens: Vec::new(),
+        };
+        let (predicted_text, predicted_candidates) = build_prediction(&empty_summary, &history);
+        let predicted_candidates_json = serde_json::to_string(&predicted_candidates)?;
+        let empty_summary_json = serde_json::to_string(&empty_summary)?;
+
+        while slot < current_slot_start {
+            let slot_end = slot + Duration::minutes(30);
+
+            connection.execute(
+                "INSERT OR IGNORE INTO work_intervals
+                 (slot_start, slot_end, status, predicted_text, predicted_candidates, confirmed_text, summary, snooze_until, last_prompt_at, prompt_count, created_at, updated_at)
+                 VALUES (?, ?, 'pending', ?, ?, NULL, ?, NULL, NULL, 0, ?, ?)",
+                params![
+                    slot.to_rfc3339(),
+                    slot_end.to_rfc3339(),
+                    predicted_text,
+                    predicted_candidates_json,
+                    empty_summary_json,
+                    now,
+                    now,
+                ],
+            )?;
+
+            slot = slot_end;
+        }
+
+        Ok(())
+    }
+
     pub fn due_prompt_interval(
         &self,
         current_slot_start: DateTime<Local>,
