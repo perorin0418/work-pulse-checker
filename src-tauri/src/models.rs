@@ -98,8 +98,18 @@ pub struct DailySummaryItem {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DailySummarySlot {
+    pub slot_start: String,
+    pub slot_end: String,
+    pub status: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DailySummary {
     pub date: String,
     pub total_minutes: i64,
     pub items: Vec<DailySummaryItem>,
+    pub slots: Vec<DailySummarySlot>,
 }

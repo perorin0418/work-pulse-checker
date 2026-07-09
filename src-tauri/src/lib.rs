@@ -9,7 +9,8 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Local, NaiveDate, Timelike};
 use db::{Database, RuntimeSettings};
 use models::{
-    ActivitySampleRecord, DailySummary, DailySummaryItem, SettingsInput, Snapshot, WorkInterval,
+    ActivitySampleRecord, DailySummary, DailySummaryItem, DailySummarySlot, SettingsInput,
+    Snapshot, WorkInterval,
 };
 use parking_lot::RwLock;
 use tauri::{
@@ -460,10 +461,24 @@ fn summarize_day(date: &str, intervals: &[WorkInterval]) -> DailySummary {
 
     let total_minutes = items.iter().map(|item| item.minutes).sum();
 
+    let slots = intervals
+        .iter()
+        .map(|interval| DailySummarySlot {
+            slot_start: interval.slot_start.clone(),
+            slot_end: interval.slot_end.clone(),
+            status: interval.status.clone(),
+            label: interval
+                .confirmed_text
+                .clone()
+                .unwrap_or_else(|| interval.predicted_text.clone()),
+        })
+        .collect();
+
     DailySummary {
         date: date.to_string(),
         total_minutes,
         items,
+        slots,
     }
 }
 
