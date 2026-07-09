@@ -430,7 +430,7 @@ fn summarize_day(date: &str, intervals: &[WorkInterval]) -> DailySummary {
             .confirmed_text
             .clone()
             .unwrap_or_else(|| interval.predicted_text.clone());
-        let minutes = interval.summary.active_duration_seconds as i64 / 60;
+        let minutes = 30;
 
         let entry = totals.entry(label.clone()).or_insert_with(|| {
             order.push(label.clone());
