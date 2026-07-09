@@ -75,6 +75,8 @@ pub fn run() {
             let sampler_runtime = Arc::new(RwLock::new(SamplerRuntime::default()));
             app.manage(state);
 
+            database.backfill_missed_intervals(floor_to_slot(Local::now()))?;
+
             configure_autostart(app)?;
             configure_window(app)?;
             configure_tray(app)?;
