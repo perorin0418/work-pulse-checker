@@ -65,10 +65,18 @@ type DailySummaryItem = {
   slotCount: number
 }
 
+type DailySummarySlot = {
+  slotStart: string
+  slotEnd: string
+  status: 'pending' | 'confirmed'
+  label: string
+}
+
 type DailySummary = {
   date: string
   totalMinutes: number
   items: DailySummaryItem[]
+  slots: DailySummarySlot[]
 }
 
 type AppView = 'history' | 'settings' | 'summary' | 'confirmation'
@@ -93,6 +101,7 @@ const state: {
   historyDrafts: Map<string, string>
   summary: DailySummary | null
   summaryDate: string
+  summaryEditingSlot: string | null
 } = {
   snapshot: null,
   view: 'history',
@@ -100,6 +109,7 @@ const state: {
   historyDrafts: new Map(),
   summary: null,
   summaryDate: todayDateString(),
+  summaryEditingSlot: null,
 }
 
 const formatDateTime = (value: string) =>
@@ -118,6 +128,8 @@ const formatEndTime = (value: string) =>
 
 const formatSlot = (interval: WorkInterval) =>
   `${formatDateTime(interval.slotStart)} - ${formatEndTime(interval.slotEnd)}`
+
+const formatTimeRange = (start: string, end: string) => `${formatEndTime(start)} - ${formatEndTime(end)}`
 
 const formatDuration = (seconds: number) => `${Math.round(seconds / 60)}分`
 
@@ -395,6 +407,53 @@ const renderSettings = () => {
   `
 }
 
+const renderSummaryTimeline = (slots: DailySummarySlot[]) => {
+  if (slots.length === 0) {
+    return '<p class="muted">記録がありません</p>'
+  }
+
+  return `
+    <ol class="timeline">
+      ${slots
+        .map((slot) => {
+          const isEditing = state.summaryEditingSlot === slot.slotStart
+          const statusClass = slot.status === 'confirmed' ? 'status-confirmed' : 'status-pending'
+
+          return `
+            <li class="timeline-item ${isEditing ? 'is-editing' : ''}">
+              <button
+                type="button"
+                class="timeline-time"
+                data-summary-slot="${slot.slotStart}"
+                aria-expanded="${isEditing}"
+              >
+                <span class="timeline-dot ${statusClass}"></span>
+                <span>${formatTimeRange(slot.slotStart, slot.slotEnd)}</span>
+              </button>
+              <div class="timeline-content">
+                ${
+                  isEditing
+                    ? `
+                      <label class="field">
+                        <span>作業内容</span>
+                        <textarea id="summary-edit-textarea" rows="3">${slot.label}</textarea>
+                      </label>
+                      <div class="card-footer">
+                        <button type="button" class="secondary-button compact-button" id="summary-cancel-button">キャンセル</button>
+                        <button type="button" class="primary-button compact-button" data-summary-save="${slot.slotStart}">保存</button>
+                      </div>
+                    `
+                    : `<p>${slot.label || '未確定'}</p>`
+                }
+              </div>
+            </li>
+          `
+        })
+        .join('')}
+    </ol>
+  `
+}
+
 const renderSummary = () => {
   const summary = state.summary
 
@@ -426,6 +485,11 @@ const renderSummary = () => {
               : ''
           }
         </div>
+      </article>
+      <article class="settings-card">
+        <h2>タイムライン</h2>
+        <p class="muted">時間帯をクリックすると作業内容を編集できます。</p>
+        ${summary ? renderSummaryTimeline(summary.slots) : ''}
       </article>
     </section>
   `
@@ -497,6 +561,13 @@ const loadSummary = async (date: string) => {
   render()
 }
 
+const saveSummarySlot = async (slotStart: string, text: string) => {
+  await invoke('confirm_interval', { slotStart, text, fromPrompt: false })
+  state.summaryEditingSlot = null
+  await loadSummary(state.summaryDate)
+  await refreshSnapshot()
+}
+
 const wireInteractiveElements = () => {
   document.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -511,8 +582,30 @@ const wireInteractiveElements = () => {
   document.querySelector<HTMLInputElement>('#summary-date-input')?.addEventListener('change', (event) => {
     const value = (event.target as HTMLInputElement).value
     if (value) {
+      state.summaryEditingSlot = null
       void loadSummary(value)
     }
+  })
+
+  document.querySelectorAll<HTMLButtonElement>('[data-summary-slot]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const slotStart = button.dataset.summarySlot!
+      state.summaryEditingSlot = state.summaryEditingSlot === slotStart ? null : slotStart
+      render()
+    })
+  })
+
+  document.querySelector<HTMLButtonElement>('#summary-cancel-button')?.addEventListener('click', () => {
+    state.summaryEditingSlot = null
+    render()
+  })
+
+  document.querySelectorAll<HTMLButtonElement>('[data-summary-save]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const slotStart = button.dataset.summarySave!
+      const value = document.querySelector<HTMLTextAreaElement>('#summary-edit-textarea')?.value.trim() ?? ''
+      await saveSummarySlot(slotStart, value)
+    })
   })
 
   document.querySelectorAll<HTMLTextAreaElement>('[data-history-slot]').forEach((textarea) => {
