@@ -36,6 +36,7 @@ const COUNTDOWN_WINDOW_MARGIN: f64 = 20.0;
 struct AppState {
     db: Database,
     runtime_settings: Arc<RwLock<RuntimeSettings>>,
+    countdown_slot: Arc<RwLock<Option<String>>>,
 }
 
 #[derive(Default)]
@@ -77,6 +78,7 @@ pub fn run() {
             let state = AppState {
                 db: database.clone(),
                 runtime_settings: runtime_settings.clone(),
+                countdown_slot: Arc::new(RwLock::new(None)),
             };
             let sampler_runtime = Arc::new(RwLock::new(SamplerRuntime::default()));
             app.manage(state);
@@ -221,6 +223,7 @@ fn scheduler_tick(
     if let Some(interval) = database.due_prompt_interval(current_slot, now)? {
         if !is_fullscreen_now()? {
             database.mark_prompted(&interval.slot_start)?;
+            *app.state::<AppState>().countdown_slot.write() = Some(interval.slot_start.clone());
             show_countdown(app)?;
         }
     }
@@ -595,11 +598,23 @@ fn open_prompt_now(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<
         let _ = window.close();
     }
 
-    if let Some(interval) = state
-        .db
-        .latest_pending_interval()
-        .map_err(|error| error.to_string())?
-    {
+    let slot_start = state.countdown_slot.read().clone();
+    let interval = match slot_start {
+        Some(slot_start) => state
+            .db
+            .interval_by_slot(&slot_start)
+            .map_err(|error| error.to_string())?,
+        None => None,
+    };
+    let interval = match interval {
+        Some(interval) => Some(interval),
+        None => state
+            .db
+            .latest_pending_interval()
+            .map_err(|error| error.to_string())?,
+    };
+
+    if let Some(interval) = interval {
         show_prompt(&app, &interval).map_err(|error| error.to_string())?;
     }
 
