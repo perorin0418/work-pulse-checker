@@ -17,7 +17,8 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalSize, Manager, UserAttentionType, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, UserAttentionType, WebviewUrl, WebviewWindowBuilder,
+    WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -26,11 +27,16 @@ const SLEEP_RESUME_GAP_SECONDS: i64 = 15;
 const POST_SLEEP_AWAY_SECONDS: i64 = 15;
 const HISTORY_WINDOW_WIDTH: f64 = 1300.0;
 const HISTORY_WINDOW_HEIGHT: f64 = 1000.0;
+const COUNTDOWN_SECONDS: u32 = 30;
+const COUNTDOWN_WINDOW_WIDTH: f64 = 240.0;
+const COUNTDOWN_WINDOW_HEIGHT: f64 = 88.0;
+const COUNTDOWN_WINDOW_MARGIN: f64 = 20.0;
 
 #[derive(Clone)]
 struct AppState {
     db: Database,
     runtime_settings: Arc<RwLock<RuntimeSettings>>,
+    countdown_slot: Arc<RwLock<Option<String>>>,
 }
 
 #[derive(Default)]
@@ -72,6 +78,7 @@ pub fn run() {
             let state = AppState {
                 db: database.clone(),
                 runtime_settings: runtime_settings.clone(),
+                countdown_slot: Arc::new(RwLock::new(None)),
             };
             let sampler_runtime = Arc::new(RwLock::new(SamplerRuntime::default()));
             app.manage(state);
@@ -96,7 +103,8 @@ pub fn run() {
             save_settings,
             confirm_interval,
             snooze_interval,
-            get_daily_summary
+            get_daily_summary,
+            open_prompt_now
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -215,9 +223,8 @@ fn scheduler_tick(
     if let Some(interval) = database.due_prompt_interval(current_slot, now)? {
         if !is_fullscreen_now()? {
             database.mark_prompted(&interval.slot_start)?;
-            if let Some(updated) = database.interval_by_slot(&interval.slot_start)? {
-                show_prompt(app, &updated)?;
-            }
+            *app.state::<AppState>().countdown_slot.write() = Some(interval.slot_start.clone());
+            show_countdown(app)?;
         }
     }
 
@@ -367,6 +374,44 @@ fn show_prompt(app: &AppHandle, interval: &WorkInterval) -> Result<()> {
     let _ = window.request_user_attention(Some(UserAttentionType::Critical));
     app.emit("navigate", NavigatePayload { view: "history" })?;
     app.emit("work-prompt", interval.clone())?;
+    Ok(())
+}
+
+fn show_countdown(app: &AppHandle) -> Result<()> {
+    if app.get_webview_window("countdown").is_some() {
+        return Ok(());
+    }
+
+    let main_window = app
+        .get_webview_window("main")
+        .ok_or_else(|| anyhow::anyhow!("main window not found"))?;
+    let monitor = main_window
+        .primary_monitor()?
+        .ok_or_else(|| anyhow::anyhow!("no primary monitor found"))?;
+    let scale_factor = monitor.scale_factor();
+    let origin_x = monitor.position().x as f64 / scale_factor;
+    let origin_y = monitor.position().y as f64 / scale_factor;
+    let width = monitor.size().width as f64 / scale_factor;
+    let height = monitor.size().height as f64 / scale_factor;
+    let x = origin_x + width - COUNTDOWN_WINDOW_WIDTH - COUNTDOWN_WINDOW_MARGIN;
+    let y = origin_y + height - COUNTDOWN_WINDOW_HEIGHT - COUNTDOWN_WINDOW_MARGIN;
+
+    WebviewWindowBuilder::new(
+        app,
+        "countdown",
+        WebviewUrl::App(format!("countdown.html?seconds={COUNTDOWN_SECONDS}").into()),
+    )
+    .title("Work Pulse Checker")
+    .inner_size(COUNTDOWN_WINDOW_WIDTH, COUNTDOWN_WINDOW_HEIGHT)
+    .position(x, y)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .shadow(false)
+    .focused(false)
+    .build()?;
+
     Ok(())
 }
 
@@ -542,6 +587,35 @@ fn snooze_interval(
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_always_on_top(false);
         let _ = window.hide();
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn open_prompt_now(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("countdown") {
+        let _ = window.close();
+    }
+
+    let slot_start = state.countdown_slot.read().clone();
+    let interval = match slot_start {
+        Some(slot_start) => state
+            .db
+            .interval_by_slot(&slot_start)
+            .map_err(|error| error.to_string())?,
+        None => None,
+    };
+    let interval = match interval {
+        Some(interval) => Some(interval),
+        None => state
+            .db
+            .latest_pending_interval()
+            .map_err(|error| error.to_string())?,
+    };
+
+    if let Some(interval) = interval {
+        show_prompt(&app, &interval).map_err(|error| error.to_string())?;
     }
 
     Ok(())
