@@ -17,8 +17,8 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalSize, Manager, UserAttentionType, WebviewUrl, WebviewWindowBuilder,
-    WindowEvent,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, UserAttentionType, WebviewUrl,
+    WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -348,15 +348,57 @@ fn next_slot_start(now: DateTime<Local>) -> DateTime<Local> {
     floor_to_slot(now) + Duration::minutes(30)
 }
 
+/// 作業領域に収まるサイズへ丸め、その中央に配置するための矩形 (x, y, width, height) を返す。
+fn fit_rect_to_area(area: (f64, f64, f64, f64), desired: (f64, f64)) -> (f64, f64, f64, f64) {
+    let (area_x, area_y, area_width, area_height) = area;
+    let (desired_width, desired_height) = desired;
+    let width = desired_width.min(area_width);
+    let height = desired_height.min(area_height);
+    (
+        area_x + (area_width - width) / 2.0,
+        area_y + (area_height - height) / 2.0,
+        width,
+        height,
+    )
+}
+
+/// メインウィンドウをディスプレイの作業領域に収まるサイズへ調整し、中央に配置する。
+/// 画面より大きいままだとタイトルバーが画面外に出て操作できなくなるため。
+fn resize_main_window(window: &tauri::WebviewWindow) -> Result<()> {
+    let monitor = match window.current_monitor()? {
+        Some(monitor) => Some(monitor),
+        None => window.primary_monitor()?,
+    };
+    let Some(monitor) = monitor else {
+        window.set_size(LogicalSize::new(HISTORY_WINDOW_WIDTH, HISTORY_WINDOW_HEIGHT))?;
+        window.center()?;
+        return Ok(());
+    };
+
+    let scale_factor = monitor.scale_factor();
+    let work_area = monitor.work_area();
+    let (x, y, width, height) = fit_rect_to_area(
+        (
+            work_area.position.x as f64 / scale_factor,
+            work_area.position.y as f64 / scale_factor,
+            work_area.size.width as f64 / scale_factor,
+            work_area.size.height as f64 / scale_factor,
+        ),
+        (HISTORY_WINDOW_WIDTH, HISTORY_WINDOW_HEIGHT),
+    );
+    window.set_size(LogicalSize::new(width, height))?;
+    window.set_position(LogicalPosition::new(x, y))?;
+    Ok(())
+}
+
 fn show_history(app: &AppHandle) -> Result<()> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| anyhow::anyhow!("main window not found"))?;
     window.set_always_on_top(false)?;
-    window.set_size(LogicalSize::new(HISTORY_WINDOW_WIDTH, HISTORY_WINDOW_HEIGHT))?;
     window.show()?;
     window.unminimize()?;
-    window.center()?;
+    resize_main_window(&window)?;
     window.set_focus()?;
     app.emit("navigate", NavigatePayload { view: "history" })?;
     Ok(())
@@ -366,10 +408,9 @@ fn show_prompt(app: &AppHandle, interval: &WorkInterval) -> Result<()> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| anyhow::anyhow!("main window not found"))?;
-    window.set_size(LogicalSize::new(HISTORY_WINDOW_WIDTH, HISTORY_WINDOW_HEIGHT))?;
     window.show()?;
     window.unminimize()?;
-    window.center()?;
+    resize_main_window(&window)?;
     window.set_focus()?;
     let _ = window.request_user_attention(Some(UserAttentionType::Critical));
     app.emit("navigate", NavigatePayload { view: "history" })?;
@@ -619,4 +660,36 @@ fn open_prompt_now(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fit_rect_to_area, HISTORY_WINDOW_HEIGHT, HISTORY_WINDOW_WIDTH};
+
+    const DESIRED: (f64, f64) = (HISTORY_WINDOW_WIDTH, HISTORY_WINDOW_HEIGHT);
+
+    #[test]
+    fn keeps_size_and_centers_on_a_large_display() {
+        // 2560x1440 の作業領域なら 1300x1000 はそのまま中央に入る
+        let (x, y, width, height) = fit_rect_to_area((0.0, 0.0, 2560.0, 1400.0), DESIRED);
+        assert_eq!((width, height), DESIRED);
+        assert_eq!((x, y), (630.0, 200.0));
+    }
+
+    #[test]
+    fn clamps_to_a_display_smaller_than_the_window() {
+        // 1920x1080 @125% = 論理 1536x864、タスクバーを除くと 1536x816
+        let (x, y, width, height) = fit_rect_to_area((0.0, 0.0, 1536.0, 816.0), DESIRED);
+        assert_eq!((width, height), (1300.0, 816.0));
+        assert_eq!((x, y), (118.0, 0.0));
+        assert!(y >= 0.0, "タイトルバーが画面上端より外に出てはいけない");
+    }
+
+    #[test]
+    fn keeps_the_window_inside_a_secondary_display() {
+        // 左側に並んだサブディスプレイ (原点が負) でも作業領域内に収める
+        let (x, y, width, height) = fit_rect_to_area((-1280.0, 0.0, 1280.0, 700.0), DESIRED);
+        assert_eq!((width, height), (1280.0, 700.0));
+        assert_eq!((x, y), (-1280.0, 0.0));
+    }
 }
