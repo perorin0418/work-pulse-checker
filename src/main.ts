@@ -133,7 +133,11 @@ const formatTimeRange = (start: string, end: string) => `${formatEndTime(start)}
 
 const formatDuration = (seconds: number) => `${Math.round(seconds / 60)}分`
 
-const formatMinutes = (minutes: number) => `${minutes}分`
+const formatHoursAndMinutes = (minutes: number) => {
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return `${String(hours).padStart(2, '0')}:${String(remainingMinutes).padStart(2, '0')}`
+}
 
 const formatStatus = (sample: SampleOverview | null) => {
   if (!sample) {
@@ -470,7 +474,7 @@ const renderSummary = () => {
         </label>
       </article>
       <article class="settings-card">
-        <h2>${summary ? `${summary.date} の合計: ${formatMinutes(summary.totalMinutes)}` : '読み込み中...'}</h2>
+        <h2>${summary ? `${summary.date} の合計: ${formatHoursAndMinutes(summary.totalMinutes)}` : '読み込み中...'}</h2>
         <div class="pill-row">
           ${
             summary
@@ -479,7 +483,7 @@ const renderSummary = () => {
                 : summary.items
                     .map(
                       (item) =>
-                        `<span class="pill">${item.label}<strong>${formatMinutes(item.minutes)}</strong></span>`,
+                        `<span class="pill">${item.label}<strong>${formatHoursAndMinutes(item.minutes)}</strong></span>`,
                     )
                     .join('')
               : ''
