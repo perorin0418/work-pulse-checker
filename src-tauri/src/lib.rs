@@ -6,7 +6,12 @@ mod prediction;
 mod resilience;
 mod windows_activity;
 
-use std::{collections::HashMap, sync::Arc, thread, time::Duration as StdDuration};
+use std::{
+    collections::HashMap,
+    sync::{atomic::Ordering, Arc},
+    thread,
+    time::Duration as StdDuration,
+};
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Local, NaiveDate, Timelike};
@@ -17,6 +22,7 @@ use models::{
     Snapshot, WorkInterval,
 };
 use parking_lot::RwLock;
+use resilience::{is_stale, run_worker_loop, WorkerPulse};
 use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
@@ -35,6 +41,10 @@ const COUNTDOWN_SECONDS: u32 = 30;
 const COUNTDOWN_WINDOW_WIDTH: f64 = 240.0;
 const COUNTDOWN_WINDOW_HEIGHT: f64 = 88.0;
 const COUNTDOWN_WINDOW_MARGIN: f64 = 20.0;
+const SCHEDULER_TICK_SECONDS: u64 = 5;
+const SAMPLER_TICK_SECONDS: u64 = 3;
+const WATCHDOG_CHECK_SECONDS: u64 = 30;
+const WATCHDOG_STALE_SECONDS: i64 = 90;
 
 #[derive(Clone)]
 struct AppState {
@@ -48,6 +58,24 @@ struct AppState {
 struct SamplerRuntime {
     last_sample_at: Option<DateTime<Local>>,
     force_away_until: Option<DateTime<Local>>,
+}
+
+#[derive(Clone)]
+struct SamplerDeps {
+    app: AppHandle,
+    database: Database,
+    runtime_settings: Arc<RwLock<RuntimeSettings>>,
+    sampler_runtime: Arc<RwLock<SamplerRuntime>>,
+}
+
+#[derive(Clone)]
+struct SchedulerDeps {
+    app: AppHandle,
+    database: Database,
+}
+
+fn now_secs() -> i64 {
+    Local::now().timestamp()
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -123,13 +151,18 @@ pub fn run() {
             configure_autostart(app)?;
             configure_window(app)?;
             configure_tray(app)?;
-            spawn_sampler(
-                app.handle().clone(),
-                database.clone(),
-                runtime_settings.clone(),
-                sampler_runtime,
+            spawn_workers(
+                SamplerDeps {
+                    app: app.handle().clone(),
+                    database: database.clone(),
+                    runtime_settings: runtime_settings.clone(),
+                    sampler_runtime,
+                },
+                SchedulerDeps {
+                    app: app.handle().clone(),
+                    database,
+                },
             );
-            spawn_scheduler(app.handle().clone(), database);
 
             Ok(())
         })
@@ -213,32 +246,83 @@ fn configure_tray(app: &tauri::App) -> Result<()> {
     Ok(())
 }
 
-fn spawn_sampler(
-    app: AppHandle,
-    database: Database,
-    runtime_settings: Arc<RwLock<RuntimeSettings>>,
-    sampler_runtime: Arc<RwLock<SamplerRuntime>>,
-) {
-    thread::spawn(move || loop {
-        if let Err(error) = sample_activity(&database, &runtime_settings, &sampler_runtime) {
-            log::error!("failed to capture sample: {error:#}");
-        }
-
-        let _ = app.emit("sample-tick", ());
-        thread::sleep(StdDuration::from_secs(3));
+fn start_sampler(deps: SamplerDeps, pulse: Arc<WorkerPulse>, generation: u64) {
+    thread::spawn(move || {
+        run_worker_loop(
+            pulse,
+            generation,
+            "sampler",
+            StdDuration::from_secs(SAMPLER_TICK_SECONDS),
+            now_secs,
+            move || {
+                if let Err(error) = sample_activity(
+                    &deps.database,
+                    &deps.runtime_settings,
+                    &deps.sampler_runtime,
+                ) {
+                    log::error!("failed to capture sample: {error:#}");
+                }
+                let _ = deps.app.emit("sample-tick", ());
+            },
+        );
+        log::warn!("sampler worker generation {generation} exited");
     });
 }
 
-fn spawn_scheduler(app: AppHandle, database: Database) {
+fn start_scheduler(deps: SchedulerDeps, pulse: Arc<WorkerPulse>, generation: u64) {
     thread::spawn(move || {
         let mut last_cleanup_day = None::<String>;
 
-        loop {
-            if let Err(error) = scheduler_tick(&app, &database, &mut last_cleanup_day) {
-                log::error!("failed scheduler tick: {error:#}");
-            }
+        run_worker_loop(
+            pulse,
+            generation,
+            "scheduler",
+            StdDuration::from_secs(SCHEDULER_TICK_SECONDS),
+            now_secs,
+            move || {
+                if let Err(error) = scheduler_tick(&deps.app, &deps.database, &mut last_cleanup_day)
+                {
+                    log::error!("failed scheduler tick: {error:#}");
+                }
+            },
+        );
+        log::warn!("scheduler worker generation {generation} exited");
+    });
+}
 
-            thread::sleep(StdDuration::from_secs(5));
+/// ワーカー3本（サンプラー・スケジューラ・ウォッチドッグ）を起動する。
+fn spawn_workers(sampler: SamplerDeps, scheduler: SchedulerDeps) {
+    let now = now_secs();
+    let sampler_pulse = Arc::new(WorkerPulse::new(now));
+    let scheduler_pulse = Arc::new(WorkerPulse::new(now));
+
+    start_sampler(sampler.clone(), sampler_pulse.clone(), 0);
+    start_scheduler(scheduler.clone(), scheduler_pulse.clone(), 0);
+
+    thread::spawn(move || loop {
+        thread::sleep(StdDuration::from_secs(WATCHDOG_CHECK_SECONDS));
+        let now = now_secs();
+
+        if is_stale(
+            sampler_pulse.last_tick.load(Ordering::SeqCst),
+            now,
+            WATCHDOG_STALE_SECONDS,
+        ) {
+            let generation = sampler_pulse.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            log::error!("sampler stalled; restarting as generation {generation}");
+            sampler_pulse.last_tick.store(now, Ordering::SeqCst);
+            start_sampler(sampler.clone(), sampler_pulse.clone(), generation);
+        }
+
+        if is_stale(
+            scheduler_pulse.last_tick.load(Ordering::SeqCst),
+            now,
+            WATCHDOG_STALE_SECONDS,
+        ) {
+            let generation = scheduler_pulse.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            log::error!("scheduler stalled; restarting as generation {generation}");
+            scheduler_pulse.last_tick.store(now, Ordering::SeqCst);
+            start_scheduler(scheduler.clone(), scheduler_pulse.clone(), generation);
         }
     });
 }
