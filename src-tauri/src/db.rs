@@ -18,6 +18,8 @@ use crate::{
 
 pub const SAMPLE_RETENTION_DAYS: i64 = 90;
 
+const KEEPALIVE_ENABLED_KEY: &str = "keepalive_enabled";
+
 #[derive(Clone)]
 pub struct Database {
     path: PathBuf,
@@ -78,6 +80,11 @@ impl Database {
             CREATE TABLE IF NOT EXISTS excluded_title_keywords (
               value TEXT PRIMARY KEY
             );
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
             ",
         )?;
 
@@ -98,14 +105,28 @@ impl Database {
         })
     }
 
-    pub fn load_settings(&self, autostart_enabled: bool) -> Result<SettingsDto> {
+    pub fn load_settings(&self) -> Result<SettingsDto> {
         let runtime = self.load_runtime_settings()?;
         Ok(SettingsDto {
             excluded_processes: runtime.excluded_processes,
             excluded_title_keywords: runtime.excluded_title_keywords,
-            autostart_enabled,
+            autostart_enabled: self.load_keepalive_enabled()?,
             retention_days: SAMPLE_RETENTION_DAYS,
         })
+    }
+
+    /// キープアライブタスクを登録すべきかどうか。行が無い既存DBでは有効とみなす。
+    pub fn load_keepalive_enabled(&self) -> Result<bool> {
+        let connection = self.connection()?;
+        let value: Option<String> = connection
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?",
+                params![KEEPALIVE_ENABLED_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(value.map(|value| value == "true").unwrap_or(true))
     }
 
     pub fn save_settings(&self, input: &SettingsInput) -> Result<RuntimeSettings> {
@@ -127,6 +148,15 @@ impl Database {
                 params![value],
             )?;
         }
+
+        transaction.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![
+                KEEPALIVE_ENABLED_KEY,
+                if input.autostart_enabled { "true" } else { "false" }
+            ],
+        )?;
 
         transaction.commit()?;
         self.load_runtime_settings()
@@ -637,4 +667,61 @@ fn map_interval_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkInterval> {
         last_prompt_at: row.get(8)?,
         prompt_count: row.get(9)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::Database;
+    use crate::models::SettingsInput;
+
+    fn database() -> (TempDir, Database) {
+        let dir = tempfile::tempdir().unwrap();
+        let database = Database::new(dir.path().join("test.sqlite3"));
+        database.initialize().unwrap();
+        (dir, database)
+    }
+
+    fn settings_input(autostart_enabled: bool) -> SettingsInput {
+        SettingsInput {
+            excluded_processes: Vec::new(),
+            excluded_title_keywords: Vec::new(),
+            autostart_enabled,
+        }
+    }
+
+    #[test]
+    fn keepalive_defaults_to_enabled_on_a_fresh_database() {
+        let (_dir, database) = database();
+
+        assert!(database.load_keepalive_enabled().unwrap());
+    }
+
+    #[test]
+    fn keepalive_remembers_that_it_was_turned_off() {
+        let (_dir, database) = database();
+
+        database.save_settings(&settings_input(false)).unwrap();
+
+        assert!(!database.load_keepalive_enabled().unwrap());
+    }
+
+    #[test]
+    fn keepalive_can_be_turned_back_on() {
+        let (_dir, database) = database();
+        database.save_settings(&settings_input(false)).unwrap();
+
+        database.save_settings(&settings_input(true)).unwrap();
+
+        assert!(database.load_keepalive_enabled().unwrap());
+    }
+
+    #[test]
+    fn load_settings_reports_the_persisted_keepalive_state() {
+        let (_dir, database) = database();
+        database.save_settings(&settings_input(false)).unwrap();
+
+        assert!(!database.load_settings().unwrap().autostart_enabled);
+    }
 }

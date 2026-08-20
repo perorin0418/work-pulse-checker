@@ -473,8 +473,7 @@ fn show_pending_or_history(app: &AppHandle) -> Result<()> {
 }
 
 #[tauri::command]
-fn get_snapshot(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<Snapshot, String> {
-    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+fn get_snapshot(state: tauri::State<'_, AppState>) -> Result<Snapshot, String> {
     let now = Local::now();
     let current_slot = floor_to_slot(now);
 
@@ -486,7 +485,7 @@ fn get_snapshot(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<Sna
                 intervals: state.db.recent_intervals(48)?,
                 pending_prompt: state.db.latest_pending_interval()?,
                 current_sample: state.db.latest_sample()?,
-                settings: state.db.load_settings(autostart_enabled)?,
+                settings: state.db.load_settings()?,
                 current_slot_start: current_slot.to_rfc3339(),
                 next_prompt_at: next_slot_start(now).to_rfc3339(),
             })
