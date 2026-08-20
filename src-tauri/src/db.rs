@@ -18,6 +18,10 @@ use crate::{
 
 pub const SAMPLE_RETENTION_DAYS: i64 = 90;
 
+/// プロセスが停止していて記録が取れなかったスロットに入るラベル。
+/// 起動時のバックフィルでこのラベルのまま確定させ、確認プロンプトの対象から外す。
+pub const UNRECORDED_LABEL: &str = "未記録";
+
 #[derive(Clone)]
 pub struct Database {
     path: PathBuf,
@@ -269,33 +273,23 @@ impl Database {
         };
 
         let mut slot = parse_local(&last_known)? + Duration::minutes(30);
-        let history = self.confirmed_history(48)?;
         let now = Local::now().to_rfc3339();
-        let empty_summary = SlotSummary {
-            sample_count: 0,
-            away_count: 0,
-            excluded_count: 0,
-            active_duration_seconds: 0,
-            top_processes: Vec::new(),
-            top_titles: Vec::new(),
-            top_title_tokens: Vec::new(),
-        };
-        let (predicted_text, predicted_candidates) = build_prediction(&empty_summary, &history);
-        let predicted_candidates_json = serde_json::to_string(&predicted_candidates)?;
-        let empty_summary_json = serde_json::to_string(&empty_summary)?;
+        let empty_summary_json = serde_json::to_string(&empty_slot_summary())?;
 
+        // プロセスが動いていなかった区間は入力を求めても答えようがないため、
+        // 「未記録」として確定させて確認プロンプトの対象から外す。
         while slot < current_slot_start {
             let slot_end = slot + Duration::minutes(30);
 
             connection.execute(
                 "INSERT OR IGNORE INTO work_intervals
                  (slot_start, slot_end, status, predicted_text, predicted_candidates, confirmed_text, summary, snooze_until, last_prompt_at, prompt_count, created_at, updated_at)
-                 VALUES (?, ?, 'pending', ?, ?, NULL, ?, NULL, NULL, 0, ?, ?)",
+                 VALUES (?, ?, 'confirmed', ?, '[]', ?, ?, NULL, NULL, 0, ?, ?)",
                 params![
                     slot.to_rfc3339(),
                     slot_end.to_rfc3339(),
-                    predicted_text,
-                    predicted_candidates_json,
+                    UNRECORDED_LABEL,
+                    UNRECORDED_LABEL,
                     empty_summary_json,
                     now,
                     now,
@@ -306,6 +300,22 @@ impl Database {
         }
 
         Ok(())
+    }
+
+    /// 旧バージョンのバックフィルが残した「サンプル0件の確認待ち」を未記録として確定させる。
+    /// 放置すると起動後に確認プロンプトが連続で開くため、起動時に一度掃除する。
+    pub fn flush_empty_pending_intervals(&self) -> Result<usize> {
+        let connection = self.connection()?;
+        let now = Local::now().to_rfc3339();
+        let updated = connection.execute(
+            "UPDATE work_intervals
+             SET status = 'confirmed', confirmed_text = ?, snooze_until = NULL, updated_at = ?
+             WHERE status = 'pending'
+               AND json_valid(summary)
+               AND json_extract(summary, '$.sampleCount') = 0",
+            params![UNRECORDED_LABEL, now],
+        )?;
+        Ok(updated)
     }
 
     pub fn due_prompt_interval(
@@ -432,11 +442,13 @@ impl Database {
             "SELECT slot_start, slot_end, status, predicted_text, predicted_candidates, confirmed_text, summary, snooze_until, last_prompt_at, prompt_count
              FROM work_intervals
              WHERE status = 'confirmed'
+               AND (confirmed_text IS NULL OR confirmed_text <> ?)
              ORDER BY slot_start DESC
              LIMIT ?",
         )?;
 
-        let rows = statement.query_map(params![limit as i64], map_interval_row)?;
+        let rows =
+            statement.query_map(params![UNRECORDED_LABEL, limit as i64], map_interval_row)?;
         let mut intervals = Vec::new();
 
         for row in rows {
@@ -579,6 +591,18 @@ fn tokenize(title: &str) -> Vec<String> {
         .collect()
 }
 
+fn empty_slot_summary() -> SlotSummary {
+    SlotSummary {
+        sample_count: 0,
+        away_count: 0,
+        excluded_count: 0,
+        active_duration_seconds: 0,
+        top_processes: Vec::new(),
+        top_titles: Vec::new(),
+        top_title_tokens: Vec::new(),
+    }
+}
+
 fn parse_local(value: &str) -> Result<DateTime<Local>> {
     if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
         return Ok(parsed.with_timezone(&Local));
@@ -622,19 +646,180 @@ fn map_interval_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkInterval> {
         predicted_candidates: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(4)?)
             .unwrap_or_default(),
         confirmed_text: row.get(5)?,
-        summary: serde_json::from_str::<SlotSummary>(&row.get::<_, String>(6)?).unwrap_or(
-            SlotSummary {
-                sample_count: 0,
-                away_count: 0,
-                excluded_count: 0,
-                active_duration_seconds: 0,
-                top_processes: Vec::new(),
-                top_titles: Vec::new(),
-                top_title_tokens: Vec::new(),
-            },
-        ),
+        summary: serde_json::from_str::<SlotSummary>(&row.get::<_, String>(6)?)
+            .unwrap_or_else(|_| empty_slot_summary()),
         snooze_until: row.get(7)?,
         last_prompt_at: row.get(8)?,
         prompt_count: row.get(9)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    const SAMPLED_SLOT: &str = "2026-08-20T10:00:00+09:00";
+    const GAP_SLOT: &str = "2026-08-20T11:00:00+09:00";
+    const CURRENT_SLOT: &str = "2026-08-20T12:00:00+09:00";
+
+    fn temp_db() -> Database {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "work-pulse-checker-test-{}-{}.sqlite3",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_file(&path);
+        let database = Database::new(path);
+        database.initialize().expect("failed to initialize test db");
+        database
+    }
+
+    fn dt(value: &str) -> DateTime<Local> {
+        DateTime::parse_from_rfc3339(value)
+            .expect("invalid rfc3339")
+            .with_timezone(&Local)
+    }
+
+    fn key(value: &str) -> String {
+        dt(value).to_rfc3339()
+    }
+
+    fn insert_active_sample(database: &Database, slot_start: &str) {
+        database
+            .insert_sample(&ActivitySampleRecord {
+                captured_at: dt(slot_start),
+                slot_start: dt(slot_start),
+                window_title: "設計メモ".to_string(),
+                process_name: "code.exe".to_string(),
+                classification: "active".to_string(),
+            })
+            .expect("failed to insert sample");
+    }
+
+    /// プロセス停止をまたいだ起動を再現する。10:00 のみ記録があり、10:30〜11:30 は記録なし。
+    fn database_after_a_gap() -> Database {
+        let database = temp_db();
+        insert_active_sample(&database, SAMPLED_SLOT);
+        let current_slot = dt(CURRENT_SLOT);
+        database
+            .ensure_completed_intervals(current_slot)
+            .expect("failed to ensure intervals");
+        database
+            .backfill_missed_intervals(current_slot)
+            .expect("failed to backfill");
+        database
+    }
+
+    #[test]
+    fn backfill_confirms_gap_slots_as_unrecorded() {
+        let database = database_after_a_gap();
+
+        let gap = database
+            .interval_by_slot(&key(GAP_SLOT))
+            .expect("query failed")
+            .expect("gap interval missing");
+
+        assert_eq!(gap.status, "confirmed");
+        assert_eq!(gap.confirmed_text.as_deref(), Some(UNRECORDED_LABEL));
+    }
+
+    #[test]
+    fn only_the_sampled_slot_is_prompted_after_a_gap() {
+        let database = database_after_a_gap();
+        let current_slot = dt(CURRENT_SLOT);
+        let now = dt(CURRENT_SLOT);
+
+        let due = database
+            .due_prompt_interval(current_slot, now)
+            .expect("query failed")
+            .expect("sampled slot should be prompted");
+        assert_eq!(due.slot_start, key(SAMPLED_SLOT));
+
+        database
+            .mark_prompted(&due.slot_start)
+            .expect("failed to mark prompted");
+
+        assert!(
+            database
+                .due_prompt_interval(current_slot, now)
+                .expect("query failed")
+                .is_none(),
+            "記録が取れなかったスロットが続けて通知対象になってはいけない"
+        );
+    }
+
+    #[test]
+    fn unrecorded_slots_do_not_feed_predictions() {
+        let database = database_after_a_gap();
+
+        let history = database.confirmed_history(48).expect("query failed");
+
+        assert!(
+            history
+                .iter()
+                .all(|interval| interval.confirmed_text.as_deref() != Some(UNRECORDED_LABEL)),
+            "未記録スロットは予測候補の学習元に含めない"
+        );
+    }
+
+    #[test]
+    fn existing_empty_pending_slots_are_flushed_to_unrecorded() {
+        let database = temp_db();
+        let connection = database.connection().expect("failed to open connection");
+        let empty_summary = empty_slot_summary();
+        let now = Local::now().to_rfc3339();
+        // 旧バージョンのバックフィルが残した、サンプル0件の pending スロット
+        connection
+            .execute(
+                "INSERT INTO work_intervals
+                 (slot_start, slot_end, status, predicted_text, predicted_candidates, confirmed_text, summary, snooze_until, last_prompt_at, prompt_count, created_at, updated_at)
+                 VALUES (?, ?, 'pending', '離席 / 不明', '[]', NULL, ?, NULL, NULL, 0, ?, ?)",
+                params![
+                    key(GAP_SLOT),
+                    key(CURRENT_SLOT),
+                    serde_json::to_string(&empty_summary).unwrap(),
+                    now,
+                    now,
+                ],
+            )
+            .expect("failed to seed legacy row");
+        drop(connection);
+
+        database
+            .flush_empty_pending_intervals()
+            .expect("failed to flush");
+
+        let flushed = database
+            .interval_by_slot(&key(GAP_SLOT))
+            .expect("query failed")
+            .expect("interval missing");
+        assert_eq!(flushed.status, "confirmed");
+        assert_eq!(flushed.confirmed_text.as_deref(), Some(UNRECORDED_LABEL));
+    }
+
+    #[test]
+    fn flush_keeps_pending_slots_that_have_samples() {
+        let database = temp_db();
+        insert_active_sample(&database, SAMPLED_SLOT);
+        database
+            .ensure_completed_intervals(dt(CURRENT_SLOT))
+            .expect("failed to ensure intervals");
+
+        database
+            .flush_empty_pending_intervals()
+            .expect("failed to flush");
+
+        let sampled = database
+            .interval_by_slot(&key(SAMPLED_SLOT))
+            .expect("query failed")
+            .expect("interval missing");
+        assert_eq!(
+            sampled.status, "pending",
+            "実際に記録があるスロットは確認待ちのまま残す"
+        );
+    }
 }
