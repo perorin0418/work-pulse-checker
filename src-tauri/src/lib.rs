@@ -1,18 +1,28 @@
+mod crash_marker;
 mod db;
+mod keepalive;
 mod models;
 mod prediction;
+mod resilience;
 mod windows_activity;
 
-use std::{collections::HashMap, sync::Arc, thread, time::Duration as StdDuration};
+use std::{
+    collections::HashMap,
+    sync::{atomic::Ordering, Arc},
+    thread,
+    time::Duration as StdDuration,
+};
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Local, NaiveDate, Timelike};
+use crash_marker::CrashMarker;
 use db::{Database, RuntimeSettings};
 use models::{
     ActivitySampleRecord, DailySummary, DailySummaryItem, DailySummarySlot, SettingsInput,
     Snapshot, WorkInterval,
 };
 use parking_lot::RwLock;
+use resilience::{is_stale, run_worker_loop, WorkerPulse};
 use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
@@ -20,7 +30,6 @@ use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, UserAttentionType, WebviewUrl,
     WebviewWindowBuilder, WindowEvent,
 };
-use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 const SAMPLE_INTERVAL_SECONDS: i64 = 3;
 const SLEEP_RESUME_GAP_SECONDS: i64 = 15;
@@ -31,12 +40,17 @@ const COUNTDOWN_SECONDS: u32 = 30;
 const COUNTDOWN_WINDOW_WIDTH: f64 = 240.0;
 const COUNTDOWN_WINDOW_HEIGHT: f64 = 88.0;
 const COUNTDOWN_WINDOW_MARGIN: f64 = 20.0;
+const SCHEDULER_TICK_SECONDS: u64 = 5;
+const SAMPLER_TICK_SECONDS: u64 = 3;
+const WATCHDOG_CHECK_SECONDS: u64 = 30;
+const WATCHDOG_STALE_SECONDS: i64 = 90;
 
 #[derive(Clone)]
 struct AppState {
     db: Database,
     runtime_settings: Arc<RwLock<RuntimeSettings>>,
     countdown_slot: Arc<RwLock<Option<String>>>,
+    crash_marker: Arc<CrashMarker>,
 }
 
 #[derive(Default)]
@@ -45,27 +59,64 @@ struct SamplerRuntime {
     force_away_until: Option<DateTime<Local>>,
 }
 
+#[derive(Clone)]
+struct SamplerDeps {
+    app: AppHandle,
+    database: Database,
+    runtime_settings: Arc<RwLock<RuntimeSettings>>,
+    sampler_runtime: Arc<RwLock<SamplerRuntime>>,
+}
+
+#[derive(Clone)]
+struct SchedulerDeps {
+    app: AppHandle,
+    database: Database,
+}
+
+fn now_secs() -> i64 {
+    Local::now().timestamp()
+}
+
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct NavigatePayload {
     view: &'static str,
 }
 
+/// パニックの内容と発生位置、バックトレースをログへ流す。
+/// これが無いとリリースビルドではクラッシュの痕跡がどこにも残らない。
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        log::error!("panic: {info}\nbacktrace:\n{backtrace}");
+        default_hook(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook();
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_autostart::init(
-            MacosLauncher::LaunchAgent,
-            None::<Vec<&str>>,
-        ))
+        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}))
         .setup(|app| {
+            let mut log_builder = tauri_plugin_log::Builder::default()
+                .clear_targets()
+                .level(log::LevelFilter::Info)
+                .max_file_size(2 * 1024 * 1024)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("work-pulse-checker".into()),
+                    },
+                ));
             if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
+                log_builder = log_builder.target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::Stdout,
+                ));
             }
+            app.handle().plugin(log_builder.build())?;
 
             let data_dir = app
                 .path()
@@ -74,11 +125,19 @@ pub fn run() {
             let database = Database::new(data_dir.join("work-pulse-checker.sqlite3"));
             database.initialize()?;
 
+            let crash_marker = Arc::new(CrashMarker::new(&data_dir));
+            match crash_marker.check_and_arm(&Local::now().to_rfc3339()) {
+                Ok(true) => log::warn!("前回のプロセスは正常終了していない"),
+                Ok(false) => {}
+                Err(error) => log::error!("failed to update the running marker: {error:#}"),
+            }
+
             let runtime_settings = Arc::new(RwLock::new(database.load_runtime_settings()?));
             let state = AppState {
                 db: database.clone(),
                 runtime_settings: runtime_settings.clone(),
                 countdown_slot: Arc::new(RwLock::new(None)),
+                crash_marker,
             };
             let sampler_runtime = Arc::new(RwLock::new(SamplerRuntime::default()));
             app.manage(state);
@@ -89,16 +148,21 @@ pub fn run() {
                 log::info!("flushed {flushed} empty pending intervals as unrecorded");
             }
 
-            configure_autostart(app)?;
+            configure_keepalive(app)?;
             configure_window(app)?;
             configure_tray(app)?;
-            spawn_sampler(
-                app.handle().clone(),
-                database.clone(),
-                runtime_settings.clone(),
-                sampler_runtime,
+            spawn_workers(
+                SamplerDeps {
+                    app: app.handle().clone(),
+                    database: database.clone(),
+                    runtime_settings: runtime_settings.clone(),
+                    sampler_runtime,
+                },
+                SchedulerDeps {
+                    app: app.handle().clone(),
+                    database,
+                },
             );
-            spawn_scheduler(app.handle().clone(), database);
 
             Ok(())
         })
@@ -114,11 +178,16 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-fn configure_autostart(app: &tauri::App) -> Result<()> {
-    let autostart = app.autolaunch();
-    if !autostart.is_enabled().unwrap_or(false) {
-        let _ = autostart.enable();
+/// キープアライブタスクを DB の設定に合わせる。
+/// 有効時は毎回 /F で上書き登録するので、exe を別フォルダへ置き直しても追従する。
+fn configure_keepalive(app: &tauri::App) -> Result<()> {
+    keepalive::remove_legacy_run_key();
+
+    let enabled = app.state::<AppState>().db.load_keepalive_enabled()?;
+    if let Err(error) = keepalive::reconcile(enabled) {
+        log::error!("failed to reconcile the keepalive task: {error:#}");
     }
+
     Ok(())
 }
 
@@ -162,6 +231,9 @@ fn configure_tray(app: &tauri::App) -> Result<()> {
                 let _ = show_history(app);
             }
             "quit" => {
+                if let Err(error) = app.state::<AppState>().crash_marker.disarm() {
+                    log::error!("failed to clear the running marker: {error:#}");
+                }
                 app.exit(0);
             }
             _ => {}
@@ -181,32 +253,83 @@ fn configure_tray(app: &tauri::App) -> Result<()> {
     Ok(())
 }
 
-fn spawn_sampler(
-    app: AppHandle,
-    database: Database,
-    runtime_settings: Arc<RwLock<RuntimeSettings>>,
-    sampler_runtime: Arc<RwLock<SamplerRuntime>>,
-) {
-    thread::spawn(move || loop {
-        if let Err(error) = sample_activity(&database, &runtime_settings, &sampler_runtime) {
-            log::error!("failed to capture sample: {error:#}");
-        }
-
-        let _ = app.emit("sample-tick", ());
-        thread::sleep(StdDuration::from_secs(3));
+fn start_sampler(deps: SamplerDeps, pulse: Arc<WorkerPulse>, generation: u64) {
+    thread::spawn(move || {
+        run_worker_loop(
+            pulse,
+            generation,
+            "sampler",
+            StdDuration::from_secs(SAMPLER_TICK_SECONDS),
+            now_secs,
+            move || {
+                if let Err(error) = sample_activity(
+                    &deps.database,
+                    &deps.runtime_settings,
+                    &deps.sampler_runtime,
+                ) {
+                    log::error!("failed to capture sample: {error:#}");
+                }
+                let _ = deps.app.emit("sample-tick", ());
+            },
+        );
+        log::warn!("sampler worker generation {generation} exited");
     });
 }
 
-fn spawn_scheduler(app: AppHandle, database: Database) {
+fn start_scheduler(deps: SchedulerDeps, pulse: Arc<WorkerPulse>, generation: u64) {
     thread::spawn(move || {
         let mut last_cleanup_day = None::<String>;
 
-        loop {
-            if let Err(error) = scheduler_tick(&app, &database, &mut last_cleanup_day) {
-                log::error!("failed scheduler tick: {error:#}");
-            }
+        run_worker_loop(
+            pulse,
+            generation,
+            "scheduler",
+            StdDuration::from_secs(SCHEDULER_TICK_SECONDS),
+            now_secs,
+            move || {
+                if let Err(error) = scheduler_tick(&deps.app, &deps.database, &mut last_cleanup_day)
+                {
+                    log::error!("failed scheduler tick: {error:#}");
+                }
+            },
+        );
+        log::warn!("scheduler worker generation {generation} exited");
+    });
+}
 
-            thread::sleep(StdDuration::from_secs(5));
+/// ワーカー3本（サンプラー・スケジューラ・ウォッチドッグ）を起動する。
+fn spawn_workers(sampler: SamplerDeps, scheduler: SchedulerDeps) {
+    let now = now_secs();
+    let sampler_pulse = Arc::new(WorkerPulse::new(now));
+    let scheduler_pulse = Arc::new(WorkerPulse::new(now));
+
+    start_sampler(sampler.clone(), sampler_pulse.clone(), 0);
+    start_scheduler(scheduler.clone(), scheduler_pulse.clone(), 0);
+
+    thread::spawn(move || loop {
+        thread::sleep(StdDuration::from_secs(WATCHDOG_CHECK_SECONDS));
+        let now = now_secs();
+
+        if is_stale(
+            sampler_pulse.last_tick.load(Ordering::SeqCst),
+            now,
+            WATCHDOG_STALE_SECONDS,
+        ) {
+            let generation = sampler_pulse.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            log::error!("sampler stalled; restarting as generation {generation}");
+            sampler_pulse.last_tick.store(now, Ordering::SeqCst);
+            start_sampler(sampler.clone(), sampler_pulse.clone(), generation);
+        }
+
+        if is_stale(
+            scheduler_pulse.last_tick.load(Ordering::SeqCst),
+            now,
+            WATCHDOG_STALE_SECONDS,
+        ) {
+            let generation = scheduler_pulse.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            log::error!("scheduler stalled; restarting as generation {generation}");
+            scheduler_pulse.last_tick.store(now, Ordering::SeqCst);
+            start_scheduler(scheduler.clone(), scheduler_pulse.clone(), generation);
         }
     });
 }
@@ -505,8 +628,7 @@ fn show_pending_or_history(app: &AppHandle) -> Result<()> {
 }
 
 #[tauri::command]
-fn get_snapshot(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<Snapshot, String> {
-    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+fn get_snapshot(state: tauri::State<'_, AppState>) -> Result<Snapshot, String> {
     let now = Local::now();
     let current_slot = floor_to_slot(now);
 
@@ -518,7 +640,7 @@ fn get_snapshot(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<Sna
                 intervals: state.db.recent_intervals(48)?,
                 pending_prompt: state.db.latest_pending_interval()?,
                 current_sample: state.db.latest_sample()?,
-                settings: state.db.load_settings(autostart_enabled)?,
+                settings: state.db.load_settings()?,
                 current_slot_start: current_slot.to_rfc3339(),
                 next_prompt_at: next_slot_start(now).to_rfc3339(),
             })
@@ -604,25 +726,14 @@ fn summarize_day(date: &str, intervals: &[WorkInterval]) -> DailySummary {
 }
 
 #[tauri::command]
-fn save_settings(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-    input: SettingsInput,
-) -> Result<(), String> {
+fn save_settings(state: tauri::State<'_, AppState>, input: SettingsInput) -> Result<(), String> {
     let runtime = state
         .db
         .save_settings(&input)
         .map_err(|error| error.to_string())?;
     *state.runtime_settings.write() = runtime;
 
-    let autostart = app.autolaunch();
-    if input.autostart_enabled {
-        autostart.enable().map_err(|error| error.to_string())?;
-    } else {
-        autostart.disable().map_err(|error| error.to_string())?;
-    }
-
-    Ok(())
+    keepalive::reconcile(input.autostart_enabled).map_err(|error| error.to_string())
 }
 
 #[tauri::command]

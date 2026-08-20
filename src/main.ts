@@ -386,11 +386,11 @@ const renderSettings = () => {
       <article class="settings-card">
         <header>
           <p class="eyebrow">設定</p>
-          <h2>収集と自動起動</h2>
+          <h2>収集と常駐</h2>
         </header>
         <label class="checkbox-row">
           <input id="autostart-checkbox" type="checkbox" ${settings.autostartEnabled ? 'checked' : ''} />
-          <span>Windows ログイン時に自動起動する</span>
+          <span>自動起動と、落ちたときの自動復活を有効にする</span>
         </label>
         <p class="muted">3秒ごとの生サンプルは ${settings.retentionDays} 日で自動削除されます。</p>
       </article>
