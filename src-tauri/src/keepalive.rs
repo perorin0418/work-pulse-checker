@@ -1,3 +1,12 @@
+use std::{
+    env, fs,
+    os::windows::process::CommandExt,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+use anyhow::{anyhow, Context, Result};
+
 pub const TASK_NAME: &str = "WorkPulseChecker-Keepalive";
 
 fn escape_xml(value: &str) -> String {
@@ -78,6 +87,87 @@ pub fn build_task_xml(exe_path: &str, user_id: &str) -> String {
     )
 }
 
+/// コンソールウィンドウを出さずに子プロセスを起動するためのフラグ。
+/// 付けないと起動のたびに黒い窓が一瞬光る。
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const LEGACY_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const LEGACY_RUN_VALUE: &str = "Work Pulse Checker";
+
+fn quiet_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
+
+fn current_user_id() -> Result<String> {
+    let user = env::var("USERNAME").context("USERNAME is not set")?;
+    let domain = env::var("USERDOMAIN").ok();
+    Ok(format_user_id(domain.as_deref(), &user))
+}
+
+fn temp_xml_path() -> PathBuf {
+    env::temp_dir().join(format!("{TASK_NAME}-{}.xml", std::process::id()))
+}
+
+/// schtasks /XML は UTF-8 のファイルを読めない環境があるため UTF-16LE + BOM で書く。
+fn write_utf16le_with_bom(path: &Path, content: &str) -> Result<()> {
+    let mut bytes = vec![0xFF, 0xFE];
+    for unit in content.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    fs::write(path, bytes)?;
+    Ok(())
+}
+
+/// タスクを望ましい状態に一致させる。
+pub fn reconcile(desired_enabled: bool) -> Result<()> {
+    if desired_enabled {
+        register()
+    } else {
+        unregister()
+    }
+}
+
+/// 毎回 /F で上書き登録する。こうすることで exe パスが常に現在のパスへ追従し、
+/// 旧レジストリ方式で起きていた「古いパスが固着して起動しない」状態を構造的に防ぐ。
+fn register() -> Result<()> {
+    let exe_path = env::current_exe().context("failed to resolve the current executable")?;
+    let xml = build_task_xml(&exe_path.to_string_lossy(), &current_user_id()?);
+    let xml_path = temp_xml_path();
+    write_utf16le_with_bom(&xml_path, &xml)?;
+
+    let status = quiet_command("schtasks")
+        .args(["/Create", "/TN", TASK_NAME, "/XML"])
+        .arg(&xml_path)
+        .arg("/F")
+        .status()
+        .context("failed to run schtasks /Create");
+    let _ = fs::remove_file(&xml_path);
+
+    let status = status?;
+    if !status.success() {
+        return Err(anyhow!("schtasks /Create exited with {status}"));
+    }
+
+    Ok(())
+}
+
+/// 未登録なら schtasks は非ゼロで終わるが、登録されていない状態が望みなので成功扱いにする。
+fn unregister() -> Result<()> {
+    let _ = quiet_command("schtasks")
+        .args(["/Delete", "/TN", TASK_NAME, "/F"])
+        .status();
+    Ok(())
+}
+
+/// tauri-plugin-autostart が残した旧レジストリ値を消す。
+/// 値が無いときも reg は非ゼロで終わるため、結果を捨てることで冪等にする。
+pub fn remove_legacy_run_key() {
+    let _ = quiet_command("reg")
+        .args(["delete", LEGACY_RUN_KEY, "/v", LEGACY_RUN_VALUE, "/f"])
+        .status();
+}
+
 #[cfg(test)]
 mod tests {
     use super::{build_task_xml, format_user_id};
@@ -143,5 +233,21 @@ mod tests {
     fn falls_back_to_the_bare_user_name() {
         assert_eq!(format_user_id(None, "taro"), "taro");
         assert_eq!(format_user_id(Some(""), "taro"), "taro");
+    }
+
+    #[test]
+    fn writes_utf16le_with_a_byte_order_mark() {
+        use super::write_utf16le_with_bom;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("task.xml");
+
+        write_utf16le_with_bom(&path, "A<").unwrap();
+
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            vec![0xFF, 0xFE, b'A', 0x00, b'<', 0x00]
+        );
     }
 }
