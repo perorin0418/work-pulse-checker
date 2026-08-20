@@ -10,6 +10,7 @@ use std::{collections::HashMap, sync::Arc, thread, time::Duration as StdDuration
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Local, NaiveDate, Timelike};
+use crash_marker::CrashMarker;
 use db::{Database, RuntimeSettings};
 use models::{
     ActivitySampleRecord, DailySummary, DailySummaryItem, DailySummarySlot, SettingsInput,
@@ -40,6 +41,7 @@ struct AppState {
     db: Database,
     runtime_settings: Arc<RwLock<RuntimeSettings>>,
     countdown_slot: Arc<RwLock<Option<String>>>,
+    crash_marker: Arc<CrashMarker>,
 }
 
 #[derive(Default)]
@@ -54,21 +56,43 @@ struct NavigatePayload {
     view: &'static str,
 }
 
+/// パニックの内容と発生位置、バックトレースをログへ流す。
+/// これが無いとリリースビルドではクラッシュの痕跡がどこにも残らない。
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        log::error!("panic: {info}\nbacktrace:\n{backtrace}");
+        default_hook(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None::<Vec<&str>>,
         ))
         .setup(|app| {
+            let mut log_builder = tauri_plugin_log::Builder::default()
+                .clear_targets()
+                .level(log::LevelFilter::Info)
+                .max_file_size(2 * 1024 * 1024)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("work-pulse-checker".into()),
+                    },
+                ));
             if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
+                log_builder = log_builder.target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::Stdout,
+                ));
             }
+            app.handle().plugin(log_builder.build())?;
 
             let data_dir = app
                 .path()
@@ -77,11 +101,19 @@ pub fn run() {
             let database = Database::new(data_dir.join("work-pulse-checker.sqlite3"));
             database.initialize()?;
 
+            let crash_marker = Arc::new(CrashMarker::new(&data_dir));
+            match crash_marker.check_and_arm(&Local::now().to_rfc3339()) {
+                Ok(true) => log::warn!("前回のプロセスは正常終了していない"),
+                Ok(false) => {}
+                Err(error) => log::error!("failed to update the running marker: {error:#}"),
+            }
+
             let runtime_settings = Arc::new(RwLock::new(database.load_runtime_settings()?));
             let state = AppState {
                 db: database.clone(),
                 runtime_settings: runtime_settings.clone(),
                 countdown_slot: Arc::new(RwLock::new(None)),
+                crash_marker,
             };
             let sampler_runtime = Arc::new(RwLock::new(SamplerRuntime::default()));
             app.manage(state);
@@ -159,6 +191,9 @@ fn configure_tray(app: &tauri::App) -> Result<()> {
                 let _ = show_history(app);
             }
             "quit" => {
+                if let Err(error) = app.state::<AppState>().crash_marker.disarm() {
+                    log::error!("failed to clear the running marker: {error:#}");
+                }
                 app.exit(0);
             }
             _ => {}
