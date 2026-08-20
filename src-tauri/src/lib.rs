@@ -143,6 +143,10 @@ pub fn run() {
             app.manage(state);
 
             database.backfill_missed_intervals(floor_to_slot(Local::now()))?;
+            let flushed = database.flush_empty_pending_intervals()?;
+            if flushed > 0 {
+                log::info!("flushed {flushed} empty pending intervals as unrecorded");
+            }
 
             configure_keepalive(app)?;
             configure_window(app)?;
@@ -198,6 +202,8 @@ fn configure_window(app: &tauri::App) -> Result<()> {
             api.prevent_close();
             let _ = managed_window.set_always_on_top(false);
             let _ = managed_window.hide();
+            // 確認せずに閉じた場合も待ち状態を解除しないと、以降の通知が止まってしまう。
+            clear_active_prompt(managed_window.app_handle());
         }
     });
 
@@ -343,15 +349,37 @@ fn scheduler_tick(
         *last_cleanup_day = Some(today);
     }
 
+    // カウントダウン中・確認待ちの間は次のスロットを掴まない。
+    // 掴んでしまうと 5 秒ごとに通知済みだけが進み、確認プロンプトが連続で開く。
+    if app.get_webview_window("countdown").is_some() {
+        return Ok(());
+    }
+
+    let state = app.state::<AppState>();
+    let active_slot = state.countdown_slot.read().clone();
+    if let Some(active_slot) = active_slot {
+        if is_awaiting_confirmation(database.interval_by_slot(&active_slot)?.as_ref()) {
+            return Ok(());
+        }
+    }
+
     if let Some(interval) = database.due_prompt_interval(current_slot, now)? {
         if !is_fullscreen_now()? {
-            database.mark_prompted(&interval.slot_start)?;
-            *app.state::<AppState>().countdown_slot.write() = Some(interval.slot_start.clone());
+            *state.countdown_slot.write() = Some(interval.slot_start.clone());
             show_countdown(app)?;
+            database.mark_prompted(&interval.slot_start)?;
         }
     }
 
     Ok(())
+}
+
+/// 直前に通知したスロットがまだユーザーの入力を待っているか。
+/// スヌーズ済み・確定済み・行が消えている場合は待っていないものとして次へ進める。
+fn is_awaiting_confirmation(interval: Option<&WorkInterval>) -> bool {
+    interval
+        .map(|interval| interval.status == "pending" && interval.snooze_until.is_none())
+        .unwrap_or(false)
 }
 
 fn sample_activity(
@@ -512,6 +540,13 @@ fn resize_main_window(window: &tauri::WebviewWindow) -> Result<()> {
     window.set_size(LogicalSize::new(width, height))?;
     window.set_position(LogicalPosition::new(x, y))?;
     Ok(())
+}
+
+/// 進行中の確認スロットを手放し、スケジューラが次のスロットへ進めるようにする。
+fn clear_active_prompt(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        *state.countdown_slot.write() = None;
+    }
 }
 
 fn show_history(app: &AppHandle) -> Result<()> {
@@ -714,6 +749,10 @@ fn confirm_interval(
         .confirm_interval(&slot_start, &text)
         .map_err(|error| error.to_string())?;
 
+    if state.countdown_slot.read().as_deref() == Some(slot_start.as_str()) {
+        *state.countdown_slot.write() = None;
+    }
+
     if from_prompt {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.set_always_on_top(false);
@@ -775,9 +814,58 @@ fn open_prompt_now(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{fit_rect_to_area, HISTORY_WINDOW_HEIGHT, HISTORY_WINDOW_WIDTH};
+    use super::{
+        fit_rect_to_area, is_awaiting_confirmation, HISTORY_WINDOW_HEIGHT, HISTORY_WINDOW_WIDTH,
+    };
+    use crate::models::{SlotSummary, WorkInterval};
 
     const DESIRED: (f64, f64) = (HISTORY_WINDOW_WIDTH, HISTORY_WINDOW_HEIGHT);
+
+    fn interval(status: &str, snooze_until: Option<&str>) -> WorkInterval {
+        WorkInterval {
+            slot_start: "2026-08-20T10:00:00+09:00".to_string(),
+            slot_end: "2026-08-20T10:30:00+09:00".to_string(),
+            status: status.to_string(),
+            predicted_text: "設計".to_string(),
+            predicted_candidates: Vec::new(),
+            confirmed_text: None,
+            summary: SlotSummary {
+                sample_count: 0,
+                away_count: 0,
+                excluded_count: 0,
+                active_duration_seconds: 0,
+                top_processes: Vec::new(),
+                top_titles: Vec::new(),
+                top_title_tokens: Vec::new(),
+            },
+            snooze_until: snooze_until.map(str::to_string),
+            last_prompt_at: None,
+            prompt_count: 1,
+        }
+    }
+
+    #[test]
+    fn waits_while_the_prompted_slot_is_still_pending() {
+        assert!(is_awaiting_confirmation(Some(&interval("pending", None))));
+    }
+
+    #[test]
+    fn stops_waiting_once_the_slot_is_confirmed() {
+        assert!(!is_awaiting_confirmation(Some(&interval("confirmed", None))));
+    }
+
+    #[test]
+    fn stops_waiting_once_the_slot_is_snoozed() {
+        assert!(!is_awaiting_confirmation(Some(&interval(
+            "pending",
+            Some("2026-08-20T10:35:00+09:00")
+        ))));
+    }
+
+    #[test]
+    fn stops_waiting_when_the_slot_is_gone() {
+        assert!(!is_awaiting_confirmation(None));
+    }
 
     #[test]
     fn keeps_size_and_centers_on_a_large_display() {
