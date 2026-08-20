@@ -4,7 +4,7 @@
 
 **Goal:** アプリが落ちても最大5分で自動復活し、プロセスが生きたまま監視だけ止まる事象も自己修復し、落ちた原因がログに残る状態にする。
 
-**Architecture:** 復活を二段構えにする。一段目は Windows タスクスケジューラで、ログオントリガに5分間隔の繰り返しを持たせた1タスクがアプリの起動を試み続ける。監視役が OS 本体なので監視役自体が死なない。二段目はプロセス内で、各ワーカースレッドのティックを `catch_unwind` で包み、ウォッチドッグがティック停止を検知してワーカーを世代番号付きで作り直す。あわせてリリースビルドでもファイルログを出し、パニックフックとマーカーファイルで死因を残す。
+**Architecture:** 復活を二段構えにする。一段目は Windows タスクスケジューラで、ログオントリガと5分間隔の繰り返しを持つ時刻トリガの2本を備えた1タスクがアプリの起動を試み続ける。監視役が OS 本体なので監視役自体が死なない。二段目はプロセス内で、各ワーカースレッドのティックを `catch_unwind` で包み、ウォッチドッグがティック停止を検知してワーカーを世代番号付きで作り直す。あわせてリリースビルドでもファイルログを出し、パニックフックとマーカーファイルで死因を残す。
 
 **Tech Stack:** Tauri 2.11 (Rust backend) + Vite/TypeScript frontend (no framework), SQLite via `rusqlite`, Windows タスクスケジューラ (`schtasks.exe`)。
 
@@ -434,6 +434,19 @@ mod tests {
         assert!(!xml.contains("<Duration>"));
     }
 
+    /// LogonTrigger の Repetition はそのトリガーが発火するまで回り始めないため、
+    /// 登録直後から効く繰り返しは過去起点の TimeTrigger 側に持たせる必要がある。
+    #[test]
+    fn carries_the_repetition_on_a_time_trigger_starting_in_the_past() {
+        let xml = build_task_xml(EXE, USER);
+
+        let (before_time_trigger, from_time_trigger) = xml.split_once("<TimeTrigger>").unwrap();
+        assert!(before_time_trigger.contains("<LogonTrigger>"));
+        assert!(!before_time_trigger.contains("<Repetition>"));
+        assert!(from_time_trigger.contains("<StartBoundary>2020-01-01T00:00:00</StartBoundary>"));
+        assert!(from_time_trigger.contains("<Interval>PT5M</Interval>"));
+    }
+
     #[test]
     fn never_expires_and_ignores_duplicate_launches() {
         let xml = build_task_xml(EXE, USER);
@@ -504,6 +517,10 @@ Expected: コンパイルエラー。`unresolved imports super::build_task_xml, 
 ```rust
 pub const TASK_NAME: &str = "WorkPulseChecker-Keepalive";
 
+/// TimeTrigger の起点。過去の固定日時にしておくことで、登録した瞬間から
+/// 5分間隔の繰り返しが有効になる。日時そのものに意味は無い。
+const KEEPALIVE_START_BOUNDARY: &str = "2020-01-01T00:00:00";
+
 fn escape_xml(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -523,8 +540,12 @@ pub fn format_user_id(domain: Option<&str>, user: &str) -> String {
 }
 
 /// `schtasks /Create /XML` に渡すタスク定義。
-/// LogonTrigger に Duration 無しの Repetition を持たせることで、
-/// 「ログオン時に起動」と「5分ごとの生存確認」を1トリガーで兼ねる。
+///
+/// トリガーを2本持つ。LogonTrigger はログオン直後に起動するためのもの。
+/// 5分ごとの生存確認は TimeTrigger 側に持たせる。Repetition は
+/// 「そのトリガーが発火した時点」から回り始めるので、LogonTrigger だけだと
+/// 既にログオン済みの状態でタスクを作った直後は次回ログオンまで一度も走らない。
+/// 過去の StartBoundary を与えた TimeTrigger なら登録直後から回り続ける。
 pub fn build_task_xml(exe_path: &str, user_id: &str) -> String {
     let exe_path = escape_xml(exe_path);
     let user_id = escape_xml(user_id);
@@ -540,11 +561,15 @@ pub fn build_task_xml(exe_path: &str, user_id: &str) -> String {
     <LogonTrigger>
       <Enabled>true</Enabled>
       <UserId>{user_id}</UserId>
+    </LogonTrigger>
+    <TimeTrigger>
+      <Enabled>true</Enabled>
+      <StartBoundary>{KEEPALIVE_START_BOUNDARY}</StartBoundary>
       <Repetition>
         <Interval>PT5M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
-    </LogonTrigger>
+    </TimeTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
@@ -586,7 +611,7 @@ pub fn build_task_xml(exe_path: &str, user_id: &str) -> String {
 - [ ] **Step 4: テストが通ることを確認**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml keepalive`
-Expected: `test result: ok. 8 passed`
+Expected: `test result: ok. 9 passed`
 
 - [ ] **Step 5: コミット**
 
@@ -740,7 +765,7 @@ pub fn remove_legacy_run_key() {
 - [ ] **Step 4: テストが通ることを確認**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml keepalive`
-Expected: `test result: ok. 9 passed`
+Expected: `test result: ok. 10 passed`
 
 - [ ] **Step 5: 実機でタスク登録が通ることを確認**
 
@@ -949,7 +974,7 @@ Run: `cargo test --manifest-path src-tauri/Cargo.toml db::tests`
 Expected: `test result: ok. 4 passed`
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml`
-Expected: 全テスト PASS（Task 1〜5 で追加した 23 件 + 既存の `fit_rect_to_area` 3 件 = 26 件）
+Expected: 全テスト PASS（Task 1〜5 で追加した 24 件 + 既存の `fit_rect_to_area` 3 件 = 27 件）
 
 - [ ] **Step 7: コミット**
 
@@ -1487,7 +1512,7 @@ Expected: `<Command>` に `src-tauri\target\release\work-pulse-checker.exe` の�
 5. 復活後、ログに前回異常終了の警告が出ていること。ログの場所は `%APPDATA%\com.perorin0418.work-pulse-checker\logs\work-pulse-checker.log`
 
 ```bash
-grep "正常終了していない" "$APPDATA/com.perorin0418.work-pulse-checker/logs/work-pulse-checker.log"
+grep "正常終了していない" "$LOCALAPPDATA/com.perorin0418.work-pulse-checker/logs/work-pulse-checker.log"
 ```
 
 Expected: 1行以上ヒットする。

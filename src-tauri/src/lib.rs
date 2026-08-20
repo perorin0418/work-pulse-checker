@@ -30,7 +30,6 @@ use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, UserAttentionType, WebviewUrl,
     WebviewWindowBuilder, WindowEvent,
 };
-use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 const SAMPLE_INTERVAL_SECONDS: i64 = 3;
 const SLEEP_RESUME_GAP_SECONDS: i64 = 15;
@@ -100,10 +99,7 @@ pub fn run() {
     install_panic_hook();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_autostart::init(
-            MacosLauncher::LaunchAgent,
-            None::<Vec<&str>>,
-        ))
+        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}))
         .setup(|app| {
             let mut log_builder = tauri_plugin_log::Builder::default()
                 .clear_targets()
@@ -148,7 +144,7 @@ pub fn run() {
 
             database.backfill_missed_intervals(floor_to_slot(Local::now()))?;
 
-            configure_autostart(app)?;
+            configure_keepalive(app)?;
             configure_window(app)?;
             configure_tray(app)?;
             spawn_workers(
@@ -178,11 +174,16 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-fn configure_autostart(app: &tauri::App) -> Result<()> {
-    let autostart = app.autolaunch();
-    if !autostart.is_enabled().unwrap_or(false) {
-        let _ = autostart.enable();
+/// キープアライブタスクを DB の設定に合わせる。
+/// 有効時は毎回 /F で上書き登録するので、exe を別フォルダへ置き直しても追従する。
+fn configure_keepalive(app: &tauri::App) -> Result<()> {
+    keepalive::remove_legacy_run_key();
+
+    let enabled = app.state::<AppState>().db.load_keepalive_enabled()?;
+    if let Err(error) = keepalive::reconcile(enabled) {
+        log::error!("failed to reconcile the keepalive task: {error:#}");
     }
+
     Ok(())
 }
 
@@ -690,25 +691,14 @@ fn summarize_day(date: &str, intervals: &[WorkInterval]) -> DailySummary {
 }
 
 #[tauri::command]
-fn save_settings(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-    input: SettingsInput,
-) -> Result<(), String> {
+fn save_settings(state: tauri::State<'_, AppState>, input: SettingsInput) -> Result<(), String> {
     let runtime = state
         .db
         .save_settings(&input)
         .map_err(|error| error.to_string())?;
     *state.runtime_settings.write() = runtime;
 
-    let autostart = app.autolaunch();
-    if input.autostart_enabled {
-        autostart.enable().map_err(|error| error.to_string())?;
-    } else {
-        autostart.disable().map_err(|error| error.to_string())?;
-    }
-
-    Ok(())
+    keepalive::reconcile(input.autostart_enabled).map_err(|error| error.to_string())
 }
 
 #[tauri::command]

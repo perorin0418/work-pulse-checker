@@ -56,7 +56,10 @@ exe を別フォルダにビルドし直すたびに同じ壊れ方をする構�
 #### タスク定義
 
 - タスク名: `WorkPulseChecker-Keepalive`
-- トリガー: `LogonTrigger` 1個。`<Repetition><Interval>PT5M</Interval></Repetition>` を持たせ、`Duration` を書かないことで無期限に5分ごと繰り返す。ログオン時起動とキープアライブを1トリガーで兼ねる
+- トリガー: 2本。
+  - `LogonTrigger` — ログオン直後に起動する。繰り返しは持たせない
+  - `TimeTrigger` — `StartBoundary` を過去の固定日時（`2020-01-01T00:00:00`）にし、`<Repetition><Interval>PT5M</Interval></Repetition>` を持たせる。`Duration` を書かないことで無期限に5分ごと繰り返す
+- 繰り返しを `LogonTrigger` ではなく `TimeTrigger` に持たせるのは、`Repetition` が「そのトリガーが発火した時点」から回り始めるため。既にログオン済みの状態でタスクを登録した直後は `LogonTrigger` が一度も発火しておらず、繰り返しも始まらない。実機で `NextRunTime` が空になることを確認済み。過去起点の `TimeTrigger` なら登録した瞬間から回る
 - `BootTrigger` は使わない。トレイ常駐アプリには対話セッションが必要なため
 - アクション: 現在の実行ファイルのフルパス（`std::env::current_exe()`）を引数なしで起動
 - `<Principal><LogonType>InteractiveToken</LogonType><UserId>ドメイン\ユーザー</UserId></Principal>` — パスワード保存が不要で、管理者権限も不要
