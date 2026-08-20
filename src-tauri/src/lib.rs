@@ -1,5 +1,6 @@
 mod crash_marker;
 mod db;
+mod keepalive;
 mod models;
 mod prediction;
 mod resilience;
