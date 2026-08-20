@@ -2,6 +2,7 @@ mod crash_marker;
 mod db;
 mod models;
 mod prediction;
+mod resilience;
 mod windows_activity;
 
 use std::{collections::HashMap, sync::Arc, thread, time::Duration as StdDuration};
