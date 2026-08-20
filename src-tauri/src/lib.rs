@@ -1,3 +1,4 @@
+mod crash_marker;
 mod db;
 mod models;
 mod prediction;

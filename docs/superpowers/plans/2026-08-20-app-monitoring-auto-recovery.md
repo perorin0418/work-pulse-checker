@@ -21,6 +21,7 @@
 - 既存の `backfill_missed_intervals` / `due_prompt_interval` / `ensure_completed_intervals` のロジックは変更しない。
 - コードスタイル: Rust は4スペースインデント、TypeScript は2スペース。コメントは自明でない制約を説明する場合のみ日本語で書く。
 - ビルド環境: 既定ツールチェーンは `stable-x86_64-pc-windows-msvc`、MSVC ビルドツールはインストール済み。テストは素の `cargo test` で動く。`build-exe.bat` の GNU ツールチェーンは配布用 exe を作るときだけ使う。
+- **`cargo test` の前に `npm ci && npm run build` を1回通しておくこと。** `tauri::generate_context!` が `tauri.conf.json` の `frontendDist`（`../dist`）の実在を要求するため、`dist/` が無いと `error: proc macro panicked ... this path doesn't exist` でテストがコンパイルできない。
 - **初回の `cargo test` は Tauri と `rusqlite`（bundled SQLite の C コンパイル込み）を全部ビルドするため10分以上かかる。** タイムアウトさせないこと。2回目以降は差分ビルドで速い。
 - タスク1〜5で追加したモジュールは、タスク6〜8で配線されるまで `dead_code` 警告を出す。この警告は想定内なので `#[allow(dead_code)]` を足して隠さない。
 
