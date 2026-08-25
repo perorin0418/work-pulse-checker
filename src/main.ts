@@ -200,11 +200,23 @@ const summaryList = (items: CountItem[], emptyText: string) => {
     .join('')
 }
 
+const findIntervalBySlot = (slotStart: string) => {
+  const fromIntervals = state.snapshot?.intervals.find((interval) => interval.slotStart === slotStart)
+  if (fromIntervals) {
+    return fromIntervals
+  }
+
+  // intervals は直近分のみ（recent_intervals の件数上限）を保持しているため、
+  // 確認待ちスロットが古くなって漏れた場合は pendingPrompt を最終手段として参照する。
+  if (state.snapshot?.pendingPrompt?.slotStart === slotStart) {
+    return state.snapshot.pendingPrompt
+  }
+
+  return null
+}
+
 const renderConfirmation = () => {
-  const prompt =
-    (state.promptSlotStart &&
-      state.snapshot?.intervals.find((interval) => interval.slotStart === state.promptSlotStart)) ||
-    null
+  const prompt = (state.promptSlotStart && findIntervalBySlot(state.promptSlotStart)) || null
 
   if (!prompt) {
     return `
