@@ -147,6 +147,12 @@ pub fn run() {
             if flushed > 0 {
                 log::info!("flushed {flushed} empty pending intervals as unrecorded");
             }
+            let flushed_stalled = database.flush_stalled_prompted_intervals()?;
+            if flushed_stalled > 0 {
+                log::info!(
+                    "flushed {flushed_stalled} stalled prompted intervals as unrecorded"
+                );
+            }
 
             configure_keepalive(app)?;
             configure_window(app)?;

@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+﻿import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import './style.css'
 
@@ -97,7 +97,7 @@ const todayDateString = () => formatDateKey(new Date())
 const state: {
   snapshot: Snapshot | null
   view: AppView
-  promptSlotStart: string | null
+  promptInterval: WorkInterval | null
   historyDrafts: Map<string, string>
   summary: DailySummary | null
   summaryDate: string
@@ -105,7 +105,7 @@ const state: {
 } = {
   snapshot: null,
   view: 'history',
-  promptSlotStart: null,
+  promptInterval: null,
   historyDrafts: new Map(),
   summary: null,
   summaryDate: todayDateString(),
@@ -215,8 +215,19 @@ const findIntervalBySlot = (slotStart: string) => {
   return null
 }
 
+// 表示に使うプロンプトの実体。snapshot 側に同じスロットの最新データがあれば
+// それを優先し（集計や候補が更新されている可能性があるため）、無ければ
+// work-prompt イベントで受け取った時点のデータをそのまま使う。
+const currentPromptInterval = (): WorkInterval | null => {
+  if (!state.promptInterval) {
+    return null
+  }
+
+  return findIntervalBySlot(state.promptInterval.slotStart) ?? state.promptInterval
+}
+
 const renderConfirmation = () => {
-  const prompt = (state.promptSlotStart && findIntervalBySlot(state.promptSlotStart)) || null
+  const prompt = currentPromptInterval()
 
   if (!prompt) {
     return `
@@ -538,7 +549,7 @@ const render = () => {
         <button type="button" class="${state.view === 'history' ? 'tab is-active' : 'tab'}" data-view="history">履歴</button>
         <button type="button" class="${state.view === 'summary' ? 'tab is-active' : 'tab'}" data-view="summary">サマリー</button>
         <button type="button" class="${state.view === 'settings' ? 'tab is-active' : 'tab'}" data-view="settings">設定</button>
-        ${state.promptSlotStart ? `<button type="button" class="${state.view === 'confirmation' ? 'tab is-active' : 'tab'}" data-view="confirmation">確認</button>` : ''}
+        ${state.promptInterval ? `<button type="button" class="${state.view === 'confirmation' ? 'tab is-active' : 'tab'}" data-view="confirmation">確認</button>` : ''}
       </nav>
       ${
         state.view === 'history'
@@ -556,7 +567,7 @@ const render = () => {
 }
 
 const closePrompt = () => {
-  state.promptSlotStart = null
+  state.promptInterval = null
   if (state.view === 'confirmation') {
     state.view = 'history'
   }
@@ -664,36 +675,36 @@ const wireInteractiveElements = () => {
       const target = document.querySelector<HTMLTextAreaElement>('#prompt-textarea')
       if (target && button.dataset.candidate) {
         target.value = button.dataset.candidate
-        if (state.promptSlotStart) {
-          setDraft(state.promptSlotStart, target.value)
+        if (state.promptInterval) {
+          setDraft(state.promptInterval.slotStart, target.value)
         }
       }
     })
   })
 
   document.querySelector<HTMLTextAreaElement>('#prompt-textarea')?.addEventListener('input', (event) => {
-    if (!state.promptSlotStart) {
+    if (!state.promptInterval) {
       return
     }
 
-    setDraft(state.promptSlotStart, (event.target as HTMLTextAreaElement).value)
+    setDraft(state.promptInterval.slotStart, (event.target as HTMLTextAreaElement).value)
   })
 
   document.querySelector<HTMLButtonElement>('#confirm-button')?.addEventListener('click', async () => {
-    if (!state.promptSlotStart) {
+    if (!state.promptInterval) {
       return
     }
 
     const value = document.querySelector<HTMLTextAreaElement>('#prompt-textarea')?.value.trim() ?? ''
-    await confirmInterval(state.promptSlotStart, value, true)
+    await confirmInterval(state.promptInterval.slotStart, value, true)
   })
 
   document.querySelector<HTMLButtonElement>('#snooze-button')?.addEventListener('click', async () => {
-    if (!state.promptSlotStart) {
+    if (!state.promptInterval) {
       return
     }
 
-    await invoke('snooze_interval', { slotStart: state.promptSlotStart, minutes: 5 })
+    await invoke('snooze_interval', { slotStart: state.promptInterval.slotStart, minutes: 5 })
     await refreshSnapshot()
     closePrompt()
   })
@@ -732,7 +743,7 @@ const refreshSnapshot = async () => {
 
 const bindBackendEvents = async () => {
   await listen<WorkInterval>('work-prompt', async (event) => {
-    state.promptSlotStart = event.payload.slotStart
+    state.promptInterval = event.payload
     state.view = 'confirmation'
     await refreshSnapshot()
   })

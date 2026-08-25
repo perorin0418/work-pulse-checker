@@ -348,6 +348,27 @@ impl Database {
         Ok(updated)
     }
 
+    /// 「一度通知済み（last_prompt_at が設定済み）かつスヌーズされていない」pending スロットを
+    /// 未記録として確定させる。
+    ///
+    /// `due_prompt_interval` は一度通知したスロットをスヌーズか確定まで二度と選ばない設計のため、
+    /// 通知後に確認が完了する前でアプリ再起動・スリープなどで `countdown_slot`（メモリ上のみの
+    /// 進行状態）が失われると、そのスロットは「通知済みなので次の通知対象にはならないが、確認も
+    /// されていない」というゾンビ状態のまま永久に残ってしまう。起動時に一度掃除する。
+    pub fn flush_stalled_prompted_intervals(&self) -> Result<usize> {
+        let connection = self.connection()?;
+        let now = Local::now().to_rfc3339();
+        let updated = connection.execute(
+            "UPDATE work_intervals
+             SET status = 'confirmed', confirmed_text = ?, updated_at = ?
+             WHERE status = 'pending'
+               AND last_prompt_at IS NOT NULL
+               AND snooze_until IS NULL",
+            params![UNRECORDED_LABEL, now],
+        )?;
+        Ok(updated)
+    }
+
     pub fn due_prompt_interval(
         &self,
         current_slot_start: DateTime<Local>,
@@ -829,6 +850,93 @@ mod tests {
             .expect("interval missing");
         assert_eq!(flushed.status, "confirmed");
         assert_eq!(flushed.confirmed_text.as_deref(), Some(UNRECORDED_LABEL));
+    }
+
+    #[test]
+    fn stalled_prompted_pending_slots_are_flushed_to_unrecorded() {
+        let database = temp_db();
+        let connection = database.connection().expect("failed to open connection");
+        let empty_summary = empty_slot_summary();
+        let now = Local::now().to_rfc3339();
+        // 一度通知済み（last_prompt_at 設定済み）だが確定もスヌーズもされないまま
+        // アプリ再起動などで宙に浮いた pending スロット。
+        connection
+            .execute(
+                "INSERT INTO work_intervals
+                 (slot_start, slot_end, status, predicted_text, predicted_candidates, confirmed_text, summary, snooze_until, last_prompt_at, prompt_count, created_at, updated_at)
+                 VALUES (?, ?, 'pending', '会議', '[]', NULL, ?, NULL, ?, 1, ?, ?)",
+                params![
+                    key(GAP_SLOT),
+                    key(CURRENT_SLOT),
+                    serde_json::to_string(&empty_summary).unwrap(),
+                    now,
+                    now,
+                    now,
+                ],
+            )
+            .expect("failed to seed stalled row");
+        drop(connection);
+
+        database
+            .flush_stalled_prompted_intervals()
+            .expect("failed to flush");
+
+        let flushed = database
+            .interval_by_slot(&key(GAP_SLOT))
+            .expect("query failed")
+            .expect("interval missing");
+        assert_eq!(flushed.status, "confirmed");
+        assert_eq!(flushed.confirmed_text.as_deref(), Some(UNRECORDED_LABEL));
+    }
+
+    #[test]
+    fn flush_stalled_keeps_pending_slots_never_prompted() {
+        let database = temp_db();
+        insert_active_sample(&database, SAMPLED_SLOT);
+        database
+            .ensure_completed_intervals(dt(CURRENT_SLOT))
+            .expect("failed to ensure intervals");
+
+        database
+            .flush_stalled_prompted_intervals()
+            .expect("failed to flush");
+
+        let sampled = database
+            .interval_by_slot(&key(SAMPLED_SLOT))
+            .expect("query failed")
+            .expect("interval missing");
+        assert_eq!(
+            sampled.status, "pending",
+            "まだ通知されていないスロットは確認待ちのまま残す"
+        );
+    }
+
+    #[test]
+    fn flush_stalled_keeps_snoozed_pending_slots() {
+        let database = temp_db();
+        insert_active_sample(&database, SAMPLED_SLOT);
+        database
+            .ensure_completed_intervals(dt(CURRENT_SLOT))
+            .expect("failed to ensure intervals");
+        database
+            .mark_prompted(&key(SAMPLED_SLOT))
+            .expect("failed to mark prompted");
+        database
+            .snooze_interval(&key(SAMPLED_SLOT), 5)
+            .expect("failed to snooze");
+
+        database
+            .flush_stalled_prompted_intervals()
+            .expect("failed to flush");
+
+        let sampled = database
+            .interval_by_slot(&key(SAMPLED_SLOT))
+            .expect("query failed")
+            .expect("interval missing");
+        assert_eq!(
+            sampled.status, "pending",
+            "再通知待ちのスロットは掃除の対象にしない"
+        );
     }
 
     #[test]
