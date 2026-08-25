@@ -14,7 +14,7 @@ use std::{
 };
 
 use anyhow::Result;
-use chrono::{DateTime, Duration, Local, NaiveDate, Timelike};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Timelike, Weekday};
 use crash_marker::CrashMarker;
 use db::{Database, RuntimeSettings};
 use models::{
@@ -44,10 +44,11 @@ const SCHEDULER_TICK_SECONDS: u64 = 5;
 const SAMPLER_TICK_SECONDS: u64 = 3;
 const WATCHDOG_CHECK_SECONDS: u64 = 30;
 const WATCHDOG_STALE_SECONDS: i64 = 90;
-/// 深夜帯の開始時刻(22時)と終了時刻(翌7時)。この間のスロットは確認を求めず自動確定する。
+/// 深夜帯の開始時刻(22時)と終了時刻(翌7時)。平日はこの間、土日は終日を
+/// 「静穏時間帯」として確認を求めず自動確定する。
 const NIGHT_QUIET_START_HOUR: u32 = 22;
 const NIGHT_QUIET_END_HOUR: u32 = 7;
-const NIGHT_AUTO_CONFIRM_LABEL: &str = "離席 / 不明";
+const QUIET_AUTO_CONFIRM_LABEL: &str = "離席 / 不明";
 
 #[derive(Clone)]
 struct AppState {
@@ -147,14 +148,14 @@ pub fn run() {
             app.manage(state);
 
             database.backfill_missed_intervals(floor_to_slot(Local::now()))?;
-            let flushed_night = database.flush_night_pending_intervals(
+            let flushed_quiet = database.flush_quiet_pending_intervals(
                 NIGHT_QUIET_START_HOUR,
                 NIGHT_QUIET_END_HOUR,
-                NIGHT_AUTO_CONFIRM_LABEL,
+                QUIET_AUTO_CONFIRM_LABEL,
             )?;
-            if flushed_night > 0 {
+            if flushed_quiet > 0 {
                 log::info!(
-                    "flushed {flushed_night} night pending intervals as {NIGHT_AUTO_CONFIRM_LABEL}"
+                    "flushed {flushed_quiet} quiet-hours pending intervals as {QUIET_AUTO_CONFIRM_LABEL}"
                 );
             }
             let flushed = database.flush_empty_pending_intervals()?;
@@ -371,14 +372,14 @@ fn scheduler_tick(
     let today = now.date_naive().to_string();
     if last_cleanup_day.as_deref() != Some(today.as_str()) {
         database.cleanup_expired_samples()?;
-        let flushed_night = database.flush_night_pending_intervals(
+        let flushed_quiet = database.flush_quiet_pending_intervals(
             NIGHT_QUIET_START_HOUR,
             NIGHT_QUIET_END_HOUR,
-            NIGHT_AUTO_CONFIRM_LABEL,
+            QUIET_AUTO_CONFIRM_LABEL,
         )?;
-        if flushed_night > 0 {
+        if flushed_quiet > 0 {
             log::info!(
-                "flushed {flushed_night} night pending intervals as {NIGHT_AUTO_CONFIRM_LABEL}"
+                "flushed {flushed_quiet} quiet-hours pending intervals as {QUIET_AUTO_CONFIRM_LABEL}"
             );
         }
         *last_cleanup_day = Some(today);
@@ -399,9 +400,9 @@ fn scheduler_tick(
     }
 
     if let Some(interval) = database.due_prompt_interval(current_slot, now)? {
-        if is_night_slot(&interval.slot_start) {
-            // 22:00〜翌7:00 のスロットはユーザーに確認を求めず、離席/不明で自動確定する。
-            database.confirm_interval(&interval.slot_start, NIGHT_AUTO_CONFIRM_LABEL)?;
+        if is_quiet_slot(&interval.slot_start) {
+            // 平日22:00〜翌7:00、土日は終日、確認を求めず自動確定する。
+            database.confirm_interval(&interval.slot_start, QUIET_AUTO_CONFIRM_LABEL)?;
         } else if !is_fullscreen_now()? {
             *state.countdown_slot.write() = Some(interval.slot_start.clone());
             show_countdown(app)?;
@@ -412,12 +413,16 @@ fn scheduler_tick(
     Ok(())
 }
 
-/// スロット開始時刻が 22:00〜翌7:00 (深夜帯) に入るかどうか。
-/// 未入力のまま夜間を過ごしたスロットを自動確定するためのガード。
-fn is_night_slot(slot_start: &str) -> bool {
+/// スロット開始時刻が確認不要な「静穏時間帯」に入るかどうか。
+/// 平日は22:00〜翌7:00の深夜帯、土日は終日を対象に、確認画面を出さず自動確定する。
+fn is_quiet_slot(slot_start: &str) -> bool {
     DateTime::parse_from_rfc3339(slot_start)
         .map(|value| {
-            let hour = value.with_timezone(&Local).hour();
+            let local = value.with_timezone(&Local);
+            if matches!(local.weekday(), Weekday::Sat | Weekday::Sun) {
+                return true;
+            }
+            let hour = local.hour();
             hour >= NIGHT_QUIET_START_HOUR || hour < NIGHT_QUIET_END_HOUR
         })
         .unwrap_or(false)
@@ -864,7 +869,7 @@ fn open_prompt_now(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::{
-        fit_rect_to_area, is_awaiting_confirmation, is_night_slot, HISTORY_WINDOW_HEIGHT,
+        fit_rect_to_area, is_awaiting_confirmation, is_quiet_slot, HISTORY_WINDOW_HEIGHT,
         HISTORY_WINDOW_WIDTH,
     };
     use crate::models::{SlotSummary, WorkInterval};
@@ -943,17 +948,27 @@ mod tests {
     }
 
     #[test]
-    fn night_slot_covers_22_to_before_7() {
-        assert!(is_night_slot("2026-08-20T22:00:00+09:00"));
-        assert!(is_night_slot("2026-08-20T23:30:00+09:00"));
-        assert!(is_night_slot("2026-08-21T00:00:00+09:00"));
-        assert!(is_night_slot("2026-08-21T06:30:00+09:00"));
+    fn night_slot_covers_22_to_before_7_on_weekdays() {
+        assert!(is_quiet_slot("2026-08-20T22:00:00+09:00"));
+        assert!(is_quiet_slot("2026-08-20T23:30:00+09:00"));
+        assert!(is_quiet_slot("2026-08-21T00:00:00+09:00"));
+        assert!(is_quiet_slot("2026-08-21T06:30:00+09:00"));
     }
 
     #[test]
-    fn daytime_slots_are_not_night_slots() {
-        assert!(!is_night_slot("2026-08-21T07:00:00+09:00"));
-        assert!(!is_night_slot("2026-08-21T12:00:00+09:00"));
-        assert!(!is_night_slot("2026-08-21T21:30:00+09:00"));
+    fn daytime_weekday_slots_are_not_quiet_slots() {
+        assert!(!is_quiet_slot("2026-08-21T07:00:00+09:00"));
+        assert!(!is_quiet_slot("2026-08-21T12:00:00+09:00"));
+        assert!(!is_quiet_slot("2026-08-21T21:30:00+09:00"));
+    }
+
+    #[test]
+    fn weekend_slots_are_quiet_all_day() {
+        // 2026-08-22 は土曜日、2026-08-23 は日曜日
+        assert!(is_quiet_slot("2026-08-22T00:00:00+09:00"));
+        assert!(is_quiet_slot("2026-08-22T12:00:00+09:00"));
+        assert!(is_quiet_slot("2026-08-22T21:30:00+09:00"));
+        assert!(is_quiet_slot("2026-08-23T09:00:00+09:00"));
+        assert!(is_quiet_slot("2026-08-23T15:30:00+09:00"));
     }
 }

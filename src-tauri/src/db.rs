@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{
@@ -369,12 +369,12 @@ impl Database {
         Ok(updated)
     }
 
-    /// 深夜帯(`night_start_hour`時〜翌`night_end_hour`時)のスロット開始時刻を持つ pending を
-    /// まとめて `label` で確定させる。
+    /// 「静穏時間帯」— 平日は`night_start_hour`時〜翌`night_end_hour`時の深夜帯、土日は終日 —
+    /// にスロット開始時刻を持つ pending をまとめて `label` で確定させる。
     ///
-    /// プロセスが落ちていた間に深夜スロットが未通知・通知済み問わず溜まっているケースを
+    /// プロセスが落ちていた間に静穏時間帯のスロットが未通知・通知済み問わず溜まっているケースを
     /// カバーするため、通知タイミングだけでなく起動時にも呼び出して過去分を含めて掃除する。
-    pub fn flush_night_pending_intervals(
+    pub fn flush_quiet_pending_intervals(
         &self,
         night_start_hour: u32,
         night_end_hour: u32,
@@ -388,8 +388,11 @@ impl Database {
         let mut targets = Vec::new();
         for row in rows {
             let slot_start = row?;
-            let hour = parse_local(&slot_start)?.hour();
-            if hour >= night_start_hour || hour < night_end_hour {
+            let local = parse_local(&slot_start)?;
+            let is_weekend = matches!(local.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun);
+            let hour = local.hour();
+            let is_night = hour >= night_start_hour || hour < night_end_hour;
+            if is_weekend || is_night {
                 targets.push(slot_start);
             }
         }
@@ -1002,9 +1005,12 @@ mod tests {
 
     const NIGHT_SLOT: &str = "2026-08-20T23:00:00+09:00";
     const NIGHT_CURRENT_SLOT: &str = "2026-08-21T00:00:00+09:00";
+    // 2026-08-22 は土曜日
+    const WEEKEND_SLOT: &str = "2026-08-22T14:00:00+09:00";
+    const WEEKEND_CURRENT_SLOT: &str = "2026-08-22T14:30:00+09:00";
 
     #[test]
-    fn flush_night_pending_intervals_confirms_past_night_slots_regardless_of_prompt_state() {
+    fn flush_quiet_pending_intervals_confirms_past_night_slots_regardless_of_prompt_state() {
         let database = temp_db();
         insert_active_sample(&database, NIGHT_SLOT);
         database
@@ -1013,8 +1019,8 @@ mod tests {
         // プロセスが落ちていた間に通知すらされずに溜まった深夜スロットを想定。
 
         let updated = database
-            .flush_night_pending_intervals(22, 7, UNRECORDED_LABEL)
-            .expect("failed to flush night pending intervals");
+            .flush_quiet_pending_intervals(22, 7, UNRECORDED_LABEL)
+            .expect("failed to flush quiet pending intervals");
 
         assert_eq!(updated, 1);
         let night = database
@@ -1026,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn flush_night_pending_intervals_ignores_daytime_slots() {
+    fn flush_quiet_pending_intervals_ignores_weekday_daytime_slots() {
         let database = temp_db();
         insert_active_sample(&database, SAMPLED_SLOT);
         database
@@ -1034,8 +1040,8 @@ mod tests {
             .expect("failed to ensure intervals");
 
         let updated = database
-            .flush_night_pending_intervals(22, 7, UNRECORDED_LABEL)
-            .expect("failed to flush night pending intervals");
+            .flush_quiet_pending_intervals(22, 7, UNRECORDED_LABEL)
+            .expect("failed to flush quiet pending intervals");
 
         assert_eq!(updated, 0);
         let sampled = database
@@ -1044,8 +1050,29 @@ mod tests {
             .expect("interval missing");
         assert_eq!(
             sampled.status, "pending",
-            "日中のスロットは深夜掃除の対象にしてはならない"
+            "平日日中のスロットは静穏時間帯掃除の対象にしてはならない"
         );
+    }
+
+    #[test]
+    fn flush_quiet_pending_intervals_confirms_weekend_daytime_slots() {
+        let database = temp_db();
+        insert_active_sample(&database, WEEKEND_SLOT);
+        database
+            .ensure_completed_intervals(dt(WEEKEND_CURRENT_SLOT))
+            .expect("failed to ensure intervals");
+
+        let updated = database
+            .flush_quiet_pending_intervals(22, 7, UNRECORDED_LABEL)
+            .expect("failed to flush quiet pending intervals");
+
+        assert_eq!(updated, 1);
+        let weekend = database
+            .interval_by_slot(&key(WEEKEND_SLOT))
+            .expect("query failed")
+            .expect("interval missing");
+        assert_eq!(weekend.status, "confirmed");
+        assert_eq!(weekend.confirmed_text.as_deref(), Some(UNRECORDED_LABEL));
     }
 
     fn settings_input(autostart_enabled: bool) -> SettingsInput {
