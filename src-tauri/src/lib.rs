@@ -147,6 +147,16 @@ pub fn run() {
             app.manage(state);
 
             database.backfill_missed_intervals(floor_to_slot(Local::now()))?;
+            let flushed_night = database.flush_night_pending_intervals(
+                NIGHT_QUIET_START_HOUR,
+                NIGHT_QUIET_END_HOUR,
+                NIGHT_AUTO_CONFIRM_LABEL,
+            )?;
+            if flushed_night > 0 {
+                log::info!(
+                    "flushed {flushed_night} night pending intervals as {NIGHT_AUTO_CONFIRM_LABEL}"
+                );
+            }
             let flushed = database.flush_empty_pending_intervals()?;
             if flushed > 0 {
                 log::info!("flushed {flushed} empty pending intervals as unrecorded");
@@ -361,6 +371,16 @@ fn scheduler_tick(
     let today = now.date_naive().to_string();
     if last_cleanup_day.as_deref() != Some(today.as_str()) {
         database.cleanup_expired_samples()?;
+        let flushed_night = database.flush_night_pending_intervals(
+            NIGHT_QUIET_START_HOUR,
+            NIGHT_QUIET_END_HOUR,
+            NIGHT_AUTO_CONFIRM_LABEL,
+        )?;
+        if flushed_night > 0 {
+            log::info!(
+                "flushed {flushed_night} night pending intervals as {NIGHT_AUTO_CONFIRM_LABEL}"
+            );
+        }
         *last_cleanup_day = Some(today);
     }
 

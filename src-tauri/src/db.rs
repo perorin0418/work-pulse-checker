@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{
@@ -366,6 +366,45 @@ impl Database {
                AND snooze_until IS NULL",
             params![UNRECORDED_LABEL, now],
         )?;
+        Ok(updated)
+    }
+
+    /// 深夜帯(`night_start_hour`時〜翌`night_end_hour`時)のスロット開始時刻を持つ pending を
+    /// まとめて `label` で確定させる。
+    ///
+    /// プロセスが落ちていた間に深夜スロットが未通知・通知済み問わず溜まっているケースを
+    /// カバーするため、通知タイミングだけでなく起動時にも呼び出して過去分を含めて掃除する。
+    pub fn flush_night_pending_intervals(
+        &self,
+        night_start_hour: u32,
+        night_end_hour: u32,
+        label: &str,
+    ) -> Result<usize> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT slot_start FROM work_intervals WHERE status = 'pending'",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut targets = Vec::new();
+        for row in rows {
+            let slot_start = row?;
+            let hour = parse_local(&slot_start)?.hour();
+            if hour >= night_start_hour || hour < night_end_hour {
+                targets.push(slot_start);
+            }
+        }
+        drop(statement);
+
+        let now = Local::now().to_rfc3339();
+        let mut updated = 0;
+        for slot_start in targets {
+            updated += connection.execute(
+                "UPDATE work_intervals
+                 SET status = 'confirmed', confirmed_text = ?, snooze_until = NULL, updated_at = ?
+                 WHERE slot_start = ? AND status = 'pending'",
+                params![label, now, slot_start],
+            )?;
+        }
         Ok(updated)
     }
 
@@ -958,6 +997,54 @@ mod tests {
         assert_eq!(
             sampled.status, "pending",
             "実際に記録があるスロットは確認待ちのまま残す"
+        );
+    }
+
+    const NIGHT_SLOT: &str = "2026-08-20T23:00:00+09:00";
+    const NIGHT_CURRENT_SLOT: &str = "2026-08-21T00:00:00+09:00";
+
+    #[test]
+    fn flush_night_pending_intervals_confirms_past_night_slots_regardless_of_prompt_state() {
+        let database = temp_db();
+        insert_active_sample(&database, NIGHT_SLOT);
+        database
+            .ensure_completed_intervals(dt(NIGHT_CURRENT_SLOT))
+            .expect("failed to ensure intervals");
+        // プロセスが落ちていた間に通知すらされずに溜まった深夜スロットを想定。
+
+        let updated = database
+            .flush_night_pending_intervals(22, 7, UNRECORDED_LABEL)
+            .expect("failed to flush night pending intervals");
+
+        assert_eq!(updated, 1);
+        let night = database
+            .interval_by_slot(&key(NIGHT_SLOT))
+            .expect("query failed")
+            .expect("interval missing");
+        assert_eq!(night.status, "confirmed");
+        assert_eq!(night.confirmed_text.as_deref(), Some(UNRECORDED_LABEL));
+    }
+
+    #[test]
+    fn flush_night_pending_intervals_ignores_daytime_slots() {
+        let database = temp_db();
+        insert_active_sample(&database, SAMPLED_SLOT);
+        database
+            .ensure_completed_intervals(dt(CURRENT_SLOT))
+            .expect("failed to ensure intervals");
+
+        let updated = database
+            .flush_night_pending_intervals(22, 7, UNRECORDED_LABEL)
+            .expect("failed to flush night pending intervals");
+
+        assert_eq!(updated, 0);
+        let sampled = database
+            .interval_by_slot(&key(SAMPLED_SLOT))
+            .expect("query failed")
+            .expect("interval missing");
+        assert_eq!(
+            sampled.status, "pending",
+            "日中のスロットは深夜掃除の対象にしてはならない"
         );
     }
 
