@@ -44,6 +44,10 @@ const SCHEDULER_TICK_SECONDS: u64 = 5;
 const SAMPLER_TICK_SECONDS: u64 = 3;
 const WATCHDOG_CHECK_SECONDS: u64 = 30;
 const WATCHDOG_STALE_SECONDS: i64 = 90;
+/// 深夜帯の開始時刻(22時)と終了時刻(翌7時)。この間のスロットは確認を求めず自動確定する。
+const NIGHT_QUIET_START_HOUR: u32 = 22;
+const NIGHT_QUIET_END_HOUR: u32 = 7;
+const NIGHT_AUTO_CONFIRM_LABEL: &str = "離席 / 不明";
 
 #[derive(Clone)]
 struct AppState {
@@ -375,7 +379,10 @@ fn scheduler_tick(
     }
 
     if let Some(interval) = database.due_prompt_interval(current_slot, now)? {
-        if !is_fullscreen_now()? {
+        if is_night_slot(&interval.slot_start) {
+            // 22:00〜翌7:00 のスロットはユーザーに確認を求めず、離席/不明で自動確定する。
+            database.confirm_interval(&interval.slot_start, NIGHT_AUTO_CONFIRM_LABEL)?;
+        } else if !is_fullscreen_now()? {
             *state.countdown_slot.write() = Some(interval.slot_start.clone());
             show_countdown(app)?;
             database.mark_prompted(&interval.slot_start)?;
@@ -383,6 +390,17 @@ fn scheduler_tick(
     }
 
     Ok(())
+}
+
+/// スロット開始時刻が 22:00〜翌7:00 (深夜帯) に入るかどうか。
+/// 未入力のまま夜間を過ごしたスロットを自動確定するためのガード。
+fn is_night_slot(slot_start: &str) -> bool {
+    DateTime::parse_from_rfc3339(slot_start)
+        .map(|value| {
+            let hour = value.with_timezone(&Local).hour();
+            hour >= NIGHT_QUIET_START_HOUR || hour < NIGHT_QUIET_END_HOUR
+        })
+        .unwrap_or(false)
 }
 
 /// 直前に通知したスロットがまだユーザーの入力を待っているか。
@@ -826,7 +844,8 @@ fn open_prompt_now(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::{
-        fit_rect_to_area, is_awaiting_confirmation, HISTORY_WINDOW_HEIGHT, HISTORY_WINDOW_WIDTH,
+        fit_rect_to_area, is_awaiting_confirmation, is_night_slot, HISTORY_WINDOW_HEIGHT,
+        HISTORY_WINDOW_WIDTH,
     };
     use crate::models::{SlotSummary, WorkInterval};
 
@@ -901,5 +920,20 @@ mod tests {
         let (x, y, width, height) = fit_rect_to_area((-1280.0, 0.0, 1280.0, 700.0), DESIRED);
         assert_eq!((width, height), (1280.0, 700.0));
         assert_eq!((x, y), (-1280.0, 0.0));
+    }
+
+    #[test]
+    fn night_slot_covers_22_to_before_7() {
+        assert!(is_night_slot("2026-08-20T22:00:00+09:00"));
+        assert!(is_night_slot("2026-08-20T23:30:00+09:00"));
+        assert!(is_night_slot("2026-08-21T00:00:00+09:00"));
+        assert!(is_night_slot("2026-08-21T06:30:00+09:00"));
+    }
+
+    #[test]
+    fn daytime_slots_are_not_night_slots() {
+        assert!(!is_night_slot("2026-08-21T07:00:00+09:00"));
+        assert!(!is_night_slot("2026-08-21T12:00:00+09:00"));
+        assert!(!is_night_slot("2026-08-21T21:30:00+09:00"));
     }
 }
