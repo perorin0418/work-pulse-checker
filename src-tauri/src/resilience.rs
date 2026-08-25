@@ -16,6 +16,21 @@ pub fn guarded<F: FnOnce()>(label: &str, body: F) {
     }
 }
 
+/// `std::thread::spawn` はスレッド生成に失敗すると呼び出し元スレッドごとパニックさせる
+/// (内部で `.expect` している)。ウォッチドッグがワーカーを再起動しようとした瞬間に
+/// これを踏むと、再起動処理自体が死んで以後誰も stall を検知できなくなる。
+/// `Builder::spawn` の `Result` をログに落として呑み込むことで、
+/// スレッドが作れない状況（ハンドルリーク等でOS上限に達した等）でも
+/// ウォッチドッグ自身は生き続け、次の巡回で再試行できるようにする。
+pub fn spawn_resilient<F>(label: &str, body: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    if let Err(error) = thread::Builder::new().name(label.to_string()).spawn(body) {
+        log::error!("failed to spawn worker thread {label}: {error}");
+    }
+}
+
 /// 最後のティックからの経過が閾値を超えたか。閾値ちょうどはまだ停止とみなさない。
 pub fn is_stale(last_tick: i64, now: i64, threshold_secs: i64) -> bool {
     now - last_tick > threshold_secs
@@ -70,7 +85,7 @@ mod tests {
         time::Duration,
     };
 
-    use super::{guarded, is_stale, run_worker_loop, WorkerPulse};
+    use super::{guarded, is_stale, run_worker_loop, spawn_resilient, WorkerPulse};
 
     #[test]
     fn guarded_swallows_a_panic_and_returns_to_the_caller() {
@@ -146,5 +161,18 @@ mod tests {
         );
 
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn spawn_resilient_runs_the_body_on_a_new_thread() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        spawn_resilient("test", move || {
+            sender.send(()).unwrap();
+        });
+
+        receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("spawned thread should run the body");
     }
 }

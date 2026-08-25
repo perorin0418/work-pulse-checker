@@ -22,7 +22,7 @@ use models::{
     Snapshot, WorkInterval,
 };
 use parking_lot::RwLock;
-use resilience::{is_stale, run_worker_loop, WorkerPulse};
+use resilience::{guarded, is_stale, run_worker_loop, spawn_resilient, WorkerPulse};
 use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
@@ -254,7 +254,7 @@ fn configure_tray(app: &tauri::App) -> Result<()> {
 }
 
 fn start_sampler(deps: SamplerDeps, pulse: Arc<WorkerPulse>, generation: u64) {
-    thread::spawn(move || {
+    spawn_resilient("sampler", move || {
         run_worker_loop(
             pulse,
             generation,
@@ -277,7 +277,7 @@ fn start_sampler(deps: SamplerDeps, pulse: Arc<WorkerPulse>, generation: u64) {
 }
 
 fn start_scheduler(deps: SchedulerDeps, pulse: Arc<WorkerPulse>, generation: u64) {
-    thread::spawn(move || {
+    spawn_resilient("scheduler", move || {
         let mut last_cleanup_day = None::<String>;
 
         run_worker_loop(
@@ -306,31 +306,36 @@ fn spawn_workers(sampler: SamplerDeps, scheduler: SchedulerDeps) {
     start_sampler(sampler.clone(), sampler_pulse.clone(), 0);
     start_scheduler(scheduler.clone(), scheduler_pulse.clone(), 0);
 
-    thread::spawn(move || loop {
-        thread::sleep(StdDuration::from_secs(WATCHDOG_CHECK_SECONDS));
-        let now = now_secs();
+    // ウォッチドッグ自身がパニックで死ぬと、以後誰もワーカーの停止を検知できず
+    // 「プロセスは生きているが監視だけ止まる」状態が永久に固定化される。
+    // 1巡分を `guarded` で包み、万一の panic でもループを継続させる。
+    spawn_resilient("watchdog", move || loop {
+        guarded("watchdog", || {
+            thread::sleep(StdDuration::from_secs(WATCHDOG_CHECK_SECONDS));
+            let now = now_secs();
 
-        if is_stale(
-            sampler_pulse.last_tick.load(Ordering::SeqCst),
-            now,
-            WATCHDOG_STALE_SECONDS,
-        ) {
-            let generation = sampler_pulse.generation.fetch_add(1, Ordering::SeqCst) + 1;
-            log::error!("sampler stalled; restarting as generation {generation}");
-            sampler_pulse.last_tick.store(now, Ordering::SeqCst);
-            start_sampler(sampler.clone(), sampler_pulse.clone(), generation);
-        }
+            if is_stale(
+                sampler_pulse.last_tick.load(Ordering::SeqCst),
+                now,
+                WATCHDOG_STALE_SECONDS,
+            ) {
+                let generation = sampler_pulse.generation.fetch_add(1, Ordering::SeqCst) + 1;
+                log::error!("sampler stalled; restarting as generation {generation}");
+                sampler_pulse.last_tick.store(now, Ordering::SeqCst);
+                start_sampler(sampler.clone(), sampler_pulse.clone(), generation);
+            }
 
-        if is_stale(
-            scheduler_pulse.last_tick.load(Ordering::SeqCst),
-            now,
-            WATCHDOG_STALE_SECONDS,
-        ) {
-            let generation = scheduler_pulse.generation.fetch_add(1, Ordering::SeqCst) + 1;
-            log::error!("scheduler stalled; restarting as generation {generation}");
-            scheduler_pulse.last_tick.store(now, Ordering::SeqCst);
-            start_scheduler(scheduler.clone(), scheduler_pulse.clone(), generation);
-        }
+            if is_stale(
+                scheduler_pulse.last_tick.load(Ordering::SeqCst),
+                now,
+                WATCHDOG_STALE_SECONDS,
+            ) {
+                let generation = scheduler_pulse.generation.fetch_add(1, Ordering::SeqCst) + 1;
+                log::error!("scheduler stalled; restarting as generation {generation}");
+                scheduler_pulse.last_tick.store(now, Ordering::SeqCst);
+                start_scheduler(scheduler.clone(), scheduler_pulse.clone(), generation);
+            }
+        });
     });
 }
 
