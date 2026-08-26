@@ -14,9 +14,7 @@ from workpulse.activity import (
     win32_get_window_text,
 )
 from workpulse.parquet_io import append_row
-from workpulse.paths import audit_path
-
-AUDIT_COLUMNS = ["timestamp", "foreground_window_title", "foreground_process_name", "idle_seconds"]
+from workpulse.paths import AUDIT_COLUMNS, audit_path
 
 
 def collect_and_append(now: datetime, active: ActiveWindowInfo, idle_seconds: int) -> None:
@@ -42,7 +40,7 @@ def main() -> None:
     try:
         run()
     except Exception:
-        log_dir = Path("logs")
+        log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         with open(log_dir / "monitor_error.log", "a", encoding="utf-8") as f:
             f.write(f"{datetime.now().isoformat()}\n{traceback.format_exc()}\n")

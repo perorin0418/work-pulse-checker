@@ -11,7 +11,7 @@ from workpulse.confirm_ui import run_confirm_dialog
 from workpulse.countdown_ui import run_countdown_window
 from workpulse.haiku import predict_work_content
 from workpulse.parquet_io import append_row, read_or_empty
-from workpulse.paths import audit_path, work_content_path
+from workpulse.paths import AUDIT_COLUMNS, audit_path, work_content_path
 from workpulse.screenshot import capture_png_bytes_mss, save_screenshot
 
 WORK_CONTENT_COLUMNS = [
@@ -22,7 +22,6 @@ WORK_CONTENT_COLUMNS = [
     "status",
     "screenshot_path",
 ]
-AUDIT_COLUMNS = ["timestamp", "foreground_window_title", "foreground_process_name", "idle_seconds"]
 
 
 def slot_bounds(now: datetime) -> tuple[datetime, datetime]:
@@ -73,7 +72,7 @@ def main() -> None:
     try:
         run()
     except Exception:
-        log_dir = Path("logs")
+        log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         with open(log_dir / "prompt_error.log", "a", encoding="utf-8") as f:
             f.write(f"{datetime.now().isoformat()}\n{traceback.format_exc()}\n")

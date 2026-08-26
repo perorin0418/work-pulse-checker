@@ -6,6 +6,8 @@ from pathlib import Path
 
 DATA_ROOT = Path("data")
 
+AUDIT_COLUMNS = ["timestamp", "foreground_window_title", "foreground_process_name", "idle_seconds"]
+
 
 def data_dir_for_date(d: date) -> Path:
     return DATA_ROOT / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}"
