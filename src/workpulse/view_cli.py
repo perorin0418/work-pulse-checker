@@ -10,8 +10,55 @@ from workpulse.parquet_io import read_or_empty
 from workpulse.paths import WORK_CONTENT_COLUMNS, work_content_path
 
 
+def generate_missing_slots(df: pd.DataFrame) -> pd.DataFrame:
+    """記録済みスロットの最初〜最後の範囲内で、記録が抜けている30分枠を補完行として返す。
+
+    例: 10:00-11:30 と 13:30-17:00 に記録があり、11:30-13:30 に記録がない場合、
+    11:30, 12:00, 12:30, 13:00 の4枠を status="missing" として返す。
+    範囲の外側（最初の記録より前・最後の記録より後）は対象外。
+    """
+    if len(df) < 2:
+        return df.iloc[0:0]
+
+    starts = pd.to_datetime(df["slot_start"])
+    existing = set(starts)
+    range_start = starts.min()
+    range_end = pd.to_datetime(df["slot_end"]).max()
+
+    missing_rows = []
+    cursor = range_start
+    while cursor < range_end:
+        if cursor not in existing:
+            missing_rows.append(
+                {
+                    "slot_start": cursor,
+                    "slot_end": cursor + pd.Timedelta(minutes=30),
+                    "predicted_text": "",
+                    "confirmed_text": "",
+                    "status": "missing",
+                    "screenshot_path": "",
+                }
+            )
+        cursor += pd.Timedelta(minutes=30)
+
+    return pd.DataFrame(missing_rows, columns=WORK_CONTENT_COLUMNS)
+
+
 def load_slots(target_date: date) -> pd.DataFrame:
-    return read_or_empty(work_content_path(target_date), WORK_CONTENT_COLUMNS)
+    """指定日のスロットを、記録が抜けている時間帯(status="missing")も補完して返す。"""
+    df = read_or_empty(work_content_path(target_date), WORK_CONTENT_COLUMNS)
+    if df.empty:
+        return df
+
+    df = df.copy()
+    df["slot_start"] = pd.to_datetime(df["slot_start"])
+    df["slot_end"] = pd.to_datetime(df["slot_end"])
+
+    missing = generate_missing_slots(df)
+    if not missing.empty:
+        df = pd.concat([df, missing], ignore_index=True)
+
+    return df.sort_values("slot_start").reset_index(drop=True)
 
 
 def format_slot_line(index: int, row: pd.Series) -> str:
@@ -57,12 +104,45 @@ def format_summary_lines(df: pd.DataFrame) -> list[str]:
 
 
 def update_confirmed_text(target_date: date, index: int, new_text: str) -> None:
+    """index は load_slots() が返す一覧（欠落枠を含む）上の位置。
+
+    欠落枠（ファイルに未保存の枠）が選択された場合は、その枠を新規行として
+    ファイルに追加する。既存行が選択された場合は従来どおり更新する。
+    """
+    display_df = load_slots(target_date)
+    if index < 0 or index >= len(display_df):
+        raise IndexError(f"invalid slot index: {index}")
+
+    slot_start = display_df.loc[index, "slot_start"]
+    slot_end = display_df.loc[index, "slot_end"]
+
     path = work_content_path(target_date)
     df = read_or_empty(path, WORK_CONTENT_COLUMNS)
-    if index < 0 or index >= len(df):
-        raise IndexError(f"invalid slot index: {index}")
-    df.loc[index, "confirmed_text"] = new_text
-    df.loc[index, "status"] = "confirmed"
+    if not df.empty:
+        df["slot_start"] = pd.to_datetime(df["slot_start"])
+
+    match = df.index[df["slot_start"] == slot_start] if not df.empty else df.index[:0]
+    if len(match) > 0:
+        raw_index = match[0]
+        df.loc[raw_index, "confirmed_text"] = new_text
+        df.loc[raw_index, "status"] = "confirmed"
+    else:
+        new_row = pd.DataFrame(
+            [
+                {
+                    "slot_start": slot_start,
+                    "slot_end": slot_end,
+                    "predicted_text": "",
+                    "confirmed_text": new_text,
+                    "status": "confirmed",
+                    "screenshot_path": "",
+                }
+            ],
+            columns=WORK_CONTENT_COLUMNS,
+        )
+        df = pd.concat([df, new_row], ignore_index=True)
+
+    df = df.sort_values("slot_start").reset_index(drop=True)
     df.to_parquet(path, index=False)
 
 

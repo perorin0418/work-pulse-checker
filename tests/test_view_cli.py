@@ -8,6 +8,7 @@ from workpulse.view_cli import (
     compute_work_summary,
     format_slot_line,
     format_summary_lines,
+    generate_missing_slots,
     load_slots,
     parse_target_date,
     run_interactive,
@@ -171,3 +172,137 @@ def test_run_interactive_prints_summary_after_editing(tmp_path, monkeypatch):
 
     assert any("作業サマリー" in line for line in outputs)
     assert any("00:30" in line and "資料作成" in line for line in outputs)
+
+
+def _seed_gap(tmp_path, monkeypatch, target_date):
+    """10:00-10:30 と 11:30-12:00 に記録があり、10:30-11:30 が抜けている状態を作る。"""
+    from workpulse import paths as paths_module
+
+    monkeypatch.setattr(paths_module, "DATA_ROOT", tmp_path)
+
+    from workpulse.parquet_io import append_row
+
+    append_row(
+        paths_module.work_content_path(target_date),
+        {
+            "slot_start": datetime(2026, 8, 26, 10, 0, 0),
+            "slot_end": datetime(2026, 8, 26, 10, 30, 0),
+            "predicted_text": "資料作成",
+            "confirmed_text": "資料作成",
+            "status": "confirmed",
+            "screenshot_path": "shot1.png",
+        },
+        WORK_CONTENT_COLUMNS,
+    )
+    append_row(
+        paths_module.work_content_path(target_date),
+        {
+            "slot_start": datetime(2026, 8, 26, 11, 30, 0),
+            "slot_end": datetime(2026, 8, 26, 12, 0, 0),
+            "predicted_text": "会議",
+            "confirmed_text": "会議",
+            "status": "confirmed",
+            "screenshot_path": "shot2.png",
+        },
+        WORK_CONTENT_COLUMNS,
+    )
+    return paths_module
+
+
+def test_generate_missing_slots_fills_gap_between_records():
+    df = pd.DataFrame(
+        [
+            {
+                "slot_start": datetime(2026, 8, 26, 10, 0, 0),
+                "slot_end": datetime(2026, 8, 26, 10, 30, 0),
+                "predicted_text": "資料作成",
+                "confirmed_text": "資料作成",
+                "status": "confirmed",
+                "screenshot_path": "shot1.png",
+            },
+            {
+                "slot_start": datetime(2026, 8, 26, 11, 30, 0),
+                "slot_end": datetime(2026, 8, 26, 12, 0, 0),
+                "predicted_text": "会議",
+                "confirmed_text": "会議",
+                "status": "confirmed",
+                "screenshot_path": "shot2.png",
+            },
+        ]
+    )
+
+    missing = generate_missing_slots(df)
+
+    assert list(missing["slot_start"]) == [
+        datetime(2026, 8, 26, 10, 30, 0),
+        datetime(2026, 8, 26, 11, 0, 0),
+    ]
+    assert (missing["status"] == "missing").all()
+    assert (missing["confirmed_text"] == "").all()
+
+
+def test_generate_missing_slots_returns_empty_when_no_gap():
+    df = pd.DataFrame(
+        [
+            {
+                "slot_start": datetime(2026, 8, 26, 10, 0, 0),
+                "slot_end": datetime(2026, 8, 26, 10, 30, 0),
+                "predicted_text": "資料作成",
+                "confirmed_text": "資料作成",
+                "status": "confirmed",
+                "screenshot_path": "shot1.png",
+            },
+            {
+                "slot_start": datetime(2026, 8, 26, 10, 30, 0),
+                "slot_end": datetime(2026, 8, 26, 11, 0, 0),
+                "predicted_text": "会議",
+                "confirmed_text": "会議",
+                "status": "confirmed",
+                "screenshot_path": "shot2.png",
+            },
+        ]
+    )
+
+    missing = generate_missing_slots(df)
+
+    assert missing.empty
+
+
+def test_load_slots_includes_missing_slots_between_records(tmp_path, monkeypatch):
+    _seed_gap(tmp_path, monkeypatch, date(2026, 8, 26))
+
+    df = load_slots(date(2026, 8, 26))
+
+    assert len(df) == 4
+    assert list(df["status"]) == ["confirmed", "missing", "missing", "confirmed"]
+    assert df.iloc[1]["slot_start"] == pd.Timestamp(2026, 8, 26, 10, 30, 0)
+    assert df.iloc[2]["slot_start"] == pd.Timestamp(2026, 8, 26, 11, 0, 0)
+
+
+def test_update_confirmed_text_can_fill_missing_slot(tmp_path, monkeypatch):
+    _seed_gap(tmp_path, monkeypatch, date(2026, 8, 26))
+    df = load_slots(date(2026, 8, 26))
+    missing_index = df.index[df["status"] == "missing"][0]
+
+    update_confirmed_text(date(2026, 8, 26), missing_index, "休憩")
+
+    df = load_slots(date(2026, 8, 26))
+    updated_row = df[df["slot_start"] == pd.Timestamp(2026, 8, 26, 10, 30, 0)].iloc[0]
+    assert updated_row["confirmed_text"] == "休憩"
+    assert updated_row["status"] == "confirmed"
+    # 残り1件はまだmissingのまま
+    assert (df["status"] == "missing").sum() == 1
+
+
+def test_run_interactive_shows_and_edits_missing_slot(tmp_path, monkeypatch):
+    _seed_gap(tmp_path, monkeypatch, date(2026, 8, 26))
+    inputs = iter(["1", "休憩", ""])
+    outputs = []
+
+    run_interactive(date(2026, 8, 26), input_func=lambda prompt: next(inputs), print_func=outputs.append)
+
+    assert any("missing" in line and "10:30-11:00" in line for line in outputs)
+    df = load_slots(date(2026, 8, 26))
+    updated_row = df[df["slot_start"] == pd.Timestamp(2026, 8, 26, 10, 30, 0)].iloc[0]
+    assert updated_row["confirmed_text"] == "休憩"
+    assert updated_row["status"] == "confirmed"
