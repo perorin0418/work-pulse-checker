@@ -23,7 +23,12 @@ def predict_work_content(
 ) -> str:
     if run_command is None:
         def run_command(cmd: list[str]) -> subprocess.CompletedProcess:
-            kwargs = {"capture_output": True, "text": True, "timeout": 60}
+            kwargs = {
+                "capture_output": True,
+                "text": True,
+                "timeout": 60,
+                "stdin": subprocess.DEVNULL,
+            }
             if sys.platform == "win32":
                 kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             return subprocess.run(cmd, **kwargs)
@@ -35,5 +40,7 @@ def predict_work_content(
         return ""
 
     if result.returncode != 0:
+        return ""
+    if result.stdout is None:
         return ""
     return result.stdout.strip()

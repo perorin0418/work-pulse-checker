@@ -12,7 +12,7 @@ from workpulse.countdown_ui import run_countdown_window
 from workpulse.haiku import predict_work_content
 from workpulse.parquet_io import append_row, read_or_empty
 from workpulse.paths import AUDIT_COLUMNS, audit_path, work_content_path
-from workpulse.screenshot import capture_png_bytes_mss, save_screenshot
+from workpulse.screenshot import capture_png_bytes_mss, try_save_screenshot
 
 WORK_CONTENT_COLUMNS = [
     "slot_start",
@@ -37,7 +37,7 @@ def build_work_content_row(
     predicted_text: str,
     confirmed_text: str,
     status: str,
-    screenshot_path: Path,
+    screenshot_path: Path | None,
 ) -> dict:
     return {
         "slot_start": slot_start,
@@ -45,7 +45,7 @@ def build_work_content_row(
         "predicted_text": predicted_text,
         "confirmed_text": confirmed_text,
         "status": status,
-        "screenshot_path": str(screenshot_path),
+        "screenshot_path": str(screenshot_path) if screenshot_path is not None else "",
     }
 
 
@@ -55,12 +55,15 @@ def run() -> None:
 
     run_countdown_window(30)
 
-    shot_path = save_screenshot(now, capture_png_bytes_mss)
+    shot_path = try_save_screenshot(now, capture_png_bytes_mss)
 
     audit_df = read_or_empty(audit_path(now.date()), AUDIT_COLUMNS)
     summary_text = summarize(audit_df, now)
 
-    predicted_text = predict_work_content(summary_text, shot_path)
+    if shot_path is not None:
+        predicted_text = predict_work_content(summary_text, shot_path)
+    else:
+        predicted_text = ""
 
     confirmed_text, status = run_confirm_dialog(predicted_text, timeout_seconds=300)
 

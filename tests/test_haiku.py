@@ -50,6 +50,14 @@ def test_predict_work_content_invokes_claude_with_haiku_model():
     assert "haiku" in captured["cmd"]
 
 
+def test_predict_work_content_returns_empty_when_stdout_is_none():
+    def fake_run(cmd):
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=None, stderr=None)
+
+    result = predict_work_content("要約", Path("shot.png"), run_command=fake_run)
+    assert result == ""
+
+
 def test_predict_work_content_default_run_command_suppresses_console_window_on_windows():
     captured_kwargs = {}
 
@@ -64,3 +72,16 @@ def test_predict_work_content_default_run_command_suppresses_console_window_on_w
         assert captured_kwargs.get("creationflags", 0) & subprocess.CREATE_NO_WINDOW
     else:
         assert "creationflags" not in captured_kwargs
+
+
+def test_predict_work_content_default_run_command_redirects_stdin_from_devnull():
+    captured_kwargs = {}
+
+    def fake_subprocess_run(cmd, **kwargs):
+        captured_kwargs.update(kwargs)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    with patch("workpulse.haiku.subprocess.run", side_effect=fake_subprocess_run):
+        predict_work_content("要約", Path("shot.png"))
+
+    assert captured_kwargs.get("stdin") == subprocess.DEVNULL

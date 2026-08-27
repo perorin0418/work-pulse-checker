@@ -39,3 +39,15 @@ def test_build_work_content_row_returns_expected_fields():
         "status": "confirmed",
         "screenshot_path": "shot.png",
     }
+
+
+def test_build_work_content_row_handles_missing_screenshot():
+    row = build_work_content_row(
+        datetime(2026, 8, 26, 9, 0, 0),
+        datetime(2026, 8, 26, 9, 30, 0),
+        "predicted",
+        "confirmed",
+        "confirmed",
+        None,
+    )
+    assert row["screenshot_path"] == ""
