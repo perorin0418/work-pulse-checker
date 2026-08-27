@@ -39,23 +39,38 @@ def run_countdown_window(total_seconds: int = 30) -> None:
     """予告カウントダウンを表示する。GUI依存のため自動テスト対象外(手動検証のみ)。"""
     import tkinter as tk
 
+    BG = "#D9480F"  # 目立つオレンジ系
+    FG = "#FFFFFF"
+    ACCENT = "#FFD43B"  # 秒数を強調する黄色
+
     root = tk.Tk()
     root.overrideredirect(True)
     root.attributes("-topmost", True)
-    label = tk.Label(root, text="", font=("Yu Gothic UI", 14), padx=16, pady=12)
-    label.pack()
+    root.attributes("-alpha", 0.95)
+    root.config(bg=BG, highlightbackground=ACCENT, highlightthickness=3)
+
+    frame = tk.Frame(root, bg=BG, padx=20, pady=14)
+    frame.pack()
+
+    title_label = tk.Label(
+        frame, text="まもなく作業内容の確認が表示されます", font=("Yu Gothic UI", 12, "bold"), bg=BG, fg=FG
+    )
+    title_label.pack()
+
+    seconds_label = tk.Label(frame, text="", font=("Yu Gothic UI", 28, "bold"), bg=BG, fg=ACCENT)
+    seconds_label.pack()
 
     root.update_idletasks()
     screen_w = root.winfo_screenwidth()
     screen_h = root.winfo_screenheight()
-    width = label.winfo_reqwidth() + 32
-    height = label.winfo_reqheight() + 24
+    width = frame.winfo_reqwidth() + 12
+    height = frame.winfo_reqheight() + 12
     x = screen_w - width - 20
     y = screen_h - height - 60
     root.geometry(f"{width}x{height}+{x}+{y}")
 
     def on_tick(remaining: int) -> None:
-        label.config(text=f"まもなく作業内容の確認が表示されます\n残り{remaining}秒")
+        seconds_label.config(text=f"残り {remaining} 秒")
 
     def on_finish() -> None:
         root.destroy()
