@@ -27,6 +27,22 @@ def task_definitions(project_root: Path) -> list[dict]:
     ]
 
 
+def resolve_silent_python_executable(python_exe: str) -> str:
+    """コンソールを開かずに実行できる `pythonw.exe` があればそちらを使う。
+
+    タスクスケジューラーが `python.exe`（コンソールサブシステム）を起動すると
+    実行のたびにコマンドプロンプトの黒いウィンドウが一瞬表示される。同じ場所に
+    `pythonw.exe`（GUIサブシステム、標準入出力を持たない）が存在すれば、それに
+    差し替えることでサイレント実行にできる。見つからない場合は元のパスをそのまま
+    返す（コンソールが開く挙動を維持しつつ、実行不能にはしない）。
+    """
+    python_path = Path(python_exe)
+    windowed_path = python_path.with_name("pythonw.exe")
+    if windowed_path.exists():
+        return str(windowed_path)
+    return python_exe
+
+
 def install_task(
     task_name: str,
     script_path: str,
@@ -58,12 +74,13 @@ def install_all(project_root: Path, python_exe: str, run_command: Optional[Calla
             return subprocess.run(cmd, capture_output=True, text=True)
 
     xml_dir = project_root / "logs" / "task_xml"
+    silent_python_exe = resolve_silent_python_executable(python_exe)
     for task in task_definitions(project_root):
         install_task(
             task_name=task["name"],
             script_path=task["script_path"],
             repetition_interval=task["repetition_interval"],
-            python_exe=python_exe,
+            python_exe=silent_python_exe,
             project_root=project_root,
             xml_dir=xml_dir,
             run_command=run_command,

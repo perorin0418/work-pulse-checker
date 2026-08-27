@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -22,7 +23,10 @@ def predict_work_content(
 ) -> str:
     if run_command is None:
         def run_command(cmd: list[str]) -> subprocess.CompletedProcess:
-            return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            kwargs = {"capture_output": True, "text": True, "timeout": 60}
+            if sys.platform == "win32":
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            return subprocess.run(cmd, **kwargs)
 
     prompt_text = build_prompt_text(summary_text, screenshot_path)
     try:

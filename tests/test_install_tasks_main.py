@@ -7,6 +7,7 @@ from workpulse.install_tasks_main import (
     PROMPT_TASK_NAME,
     install_all,
     install_task,
+    resolve_silent_python_executable,
 )
 
 
@@ -70,3 +71,52 @@ def test_install_task_raises_when_create_fails(tmp_path):
             xml_dir=tmp_path / "logs" / "task_xml",
             run_command=fake_run,
         )
+
+
+def test_resolve_silent_python_executable_swaps_python_exe_for_pythonw(tmp_path):
+    console_python = tmp_path / "python.exe"
+    windowed_python = tmp_path / "pythonw.exe"
+    windowed_python.write_bytes(b"")
+
+    result = resolve_silent_python_executable(str(console_python))
+
+    assert result == str(windowed_python)
+
+
+def test_resolve_silent_python_executable_falls_back_when_pythonw_missing(tmp_path):
+    console_python = tmp_path / "python.exe"
+
+    result = resolve_silent_python_executable(str(console_python))
+
+    assert result == str(console_python)
+
+
+def test_resolve_silent_python_executable_is_case_insensitive(tmp_path):
+    console_python = tmp_path / "Python.EXE"
+    windowed_python = tmp_path / "pythonw.exe"
+    windowed_python.write_bytes(b"")
+
+    result = resolve_silent_python_executable(str(console_python))
+
+    assert result == str(windowed_python)
+
+
+def test_install_all_uses_silent_python_executable_in_task_xml(tmp_path):
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+    console_python = scripts_dir / "python.exe"
+    windowed_python = scripts_dir / "pythonw.exe"
+    windowed_python.write_bytes(b"")
+
+    calls = []
+
+    def fake_run(cmd):
+        calls.append(cmd)
+        return _ok(cmd)
+
+    install_all(tmp_path, python_exe=str(console_python), run_command=fake_run)
+
+    xml_dir = tmp_path / "logs" / "task_xml"
+    xml_content = (xml_dir / f"{MONITOR_TASK_NAME}.xml").read_text(encoding="utf-16")
+    assert str(windowed_python) in xml_content
+    assert str(console_python) not in xml_content
