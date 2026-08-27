@@ -30,6 +30,19 @@ def run_confirm_dialog(
     各項目はボタンとして表示され、クリックすると入力欄にそのテキストが入る。
     """
     import tkinter as tk
+    from tkinter import ttk
+
+    from workpulse.theme import (
+        COLOR_BG,
+        COLOR_BORDER,
+        COLOR_SURFACE,
+        COLOR_TEXT,
+        COLOR_TEXT_MUTED,
+        FONT_NORMAL,
+        FONT_SMALL,
+        FONT_TITLE,
+        apply_ttk_theme,
+    )
 
     history = history or []
     history_rows = chunk_history_into_rows(history, items_per_row=3)
@@ -39,52 +52,91 @@ def run_confirm_dialog(
     root = tk.Tk()
     root.title("作業内容の確認")
     root.attributes("-topmost", True)
-    root.geometry(f"480x{220 + 40 * len(history_rows)}" if history else "480x220")
-    root.minsize(320, 160)
+    root.configure(bg=COLOR_BG)
+    root.geometry(f"520x{260 + 44 * len(history_rows)}" if history else "520x260")
+    root.minsize(360, 200)
     root.resizable(True, True)
 
-    root.rowconfigure(1, weight=1)
+    apply_ttk_theme(root)
+
+    root.rowconfigure(2, weight=1)
     root.columnconfigure(0, weight=1)
 
-    tk.Label(root, text="直近30分の作業内容を確認・編集してください").grid(
-        row=0, column=0, sticky="w", padx=12, pady=(12, 4)
-    )
+    container = tk.Frame(root, bg=COLOR_BG, padx=20, pady=18)
+    container.grid(row=0, column=0, rowspan=5, sticky="nsew")
+    container.rowconfigure(2, weight=1)
+    container.columnconfigure(0, weight=1)
 
-    entry = tk.Text(root, wrap="word")
+    tk.Label(
+        container,
+        text="直近30分の作業内容を確認・編集してください",
+        bg=COLOR_BG,
+        fg=COLOR_TEXT,
+        font=FONT_TITLE,
+        anchor="w",
+    ).grid(row=0, column=0, sticky="w", pady=(0, 12))
+
+    entry_border = tk.Frame(container, bg=COLOR_BORDER, padx=1, pady=1)
+    entry_border.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
+    entry_border.rowconfigure(0, weight=1)
+    entry_border.columnconfigure(0, weight=1)
+    container.rowconfigure(1, weight=1)
+
+    entry = tk.Text(
+        entry_border,
+        wrap="word",
+        bg=COLOR_SURFACE,
+        fg=COLOR_TEXT,
+        insertbackground=COLOR_TEXT,
+        relief="flat",
+        font=FONT_NORMAL,
+        padx=12,
+        pady=10,
+        borderwidth=0,
+        highlightthickness=0,
+    )
     entry.insert("1.0", predicted_text)
-    entry.grid(row=1, column=0, sticky="nsew", padx=12, pady=4)
+    entry.grid(row=0, column=0, sticky="nsew")
 
     def use_history_text(text: str) -> None:
         entry.delete("1.0", "end")
         entry.insert("1.0", text)
 
+    next_row = 2
     if history:
-        history_frame = tk.Frame(root)
-        history_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 4))
+        history_frame = tk.Frame(container, bg=COLOR_BG)
+        history_frame.grid(row=next_row, column=0, sticky="ew", pady=(0, 8))
+        next_row += 1
 
-        tk.Label(history_frame, text="本日の記録から再利用:", anchor="w").pack(
-            side="top", anchor="w"
-        )
+        tk.Label(
+            history_frame,
+            text="本日の記録から再利用",
+            anchor="w",
+            bg=COLOR_BG,
+            fg=COLOR_TEXT_MUTED,
+            font=FONT_SMALL,
+        ).pack(side="top", anchor="w", pady=(0, 6))
 
         for row_items in history_rows:
-            row_frame = tk.Frame(history_frame)
-            row_frame.pack(side="top", fill="x")
+            row_frame = tk.Frame(history_frame, bg=COLOR_BG)
+            row_frame.pack(side="top", fill="x", pady=2)
             for item in row_items:
                 label = truncate_for_button(item)
-                tk.Button(
+                ttk.Button(
                     row_frame,
                     text=label,
+                    style="History.TButton",
                     command=lambda item=item: use_history_text(item),
-                ).pack(side="left", padx=(0, 4), pady=2)
-
-    button_row = 3 if history else 2
+                ).pack(side="left", padx=(0, 6))
 
     def on_confirm() -> None:
         text, status = determine_result(True, entry.get("1.0", "end").strip(), predicted_text)
         result["text"], result["status"] = text, status
         root.destroy()
 
-    tk.Button(root, text="確定", command=on_confirm).grid(row=button_row, column=0, pady=(4, 12))
+    button_row = tk.Frame(container, bg=COLOR_BG)
+    button_row.grid(row=next_row, column=0, sticky="e", pady=(4, 0))
+    ttk.Button(button_row, text="確定", style="Modern.TButton", command=on_confirm).pack()
 
     def on_timeout() -> None:
         text, status = determine_result(False, "", predicted_text)
