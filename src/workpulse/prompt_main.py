@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sys
-import threading
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -52,39 +51,24 @@ def run() -> None:
     now = datetime.now()
     slot_start, slot_end = slot_bounds(now)
 
-    # カウントダウン表示中にスクリーンショット撮影とAI推定をバックグラウンドで
-    # 完了させておく。直列にすると推定完了までダイアログ表示が数秒〜数十秒
-    # 遅延するため、カウントダウンの待ち時間を無駄なく使う。
-    prep_result: dict = {}
+    # スクリーンショット撮影とAI推定(Haiku)を先に完了させてから、
+    # ユーザーへの30秒カウントダウンを開始する。Haikuの応答が30秒を
+    # 超えることが多く、並行実行だとカウントダウン終了後も待たされる
+    # 割に進捗が見えず不自然なため、推定完了を待ってからカウントダウン
+    # に入る順序にしている。
+    shot_path = try_save_screenshot(now, capture_png_bytes_mss)
 
-    def prepare_prediction() -> None:
-        shot_path = try_save_screenshot(now, capture_png_bytes_mss)
+    audit_df = read_or_empty(audit_path(now.date()), AUDIT_COLUMNS)
+    summary_text = summarize(audit_df, now)
 
-        audit_df = read_or_empty(audit_path(now.date()), AUDIT_COLUMNS)
-        summary_text = summarize(audit_df, now)
+    today_history = recent_confirmed_texts(now.date())
 
-        today_history = recent_confirmed_texts(now.date())
-
-        if shot_path is not None:
-            predicted_text = predict_work_content(summary_text, shot_path, today_history=today_history)
-        else:
-            predicted_text = ""
-
-        prep_result["shot_path"] = shot_path
-        prep_result["predicted_text"] = predicted_text
-        prep_result["today_history"] = today_history
-
-    prep_thread = threading.Thread(target=prepare_prediction, daemon=True)
-    prep_thread.start()
+    if shot_path is not None:
+        predicted_text = predict_work_content(summary_text, shot_path, today_history=today_history)
+    else:
+        predicted_text = ""
 
     run_countdown_window(30)
-
-    # カウントダウン(30秒)より予測処理が長引いた場合のみ、ここで待つ。
-    prep_thread.join()
-
-    shot_path = prep_result["shot_path"]
-    predicted_text = prep_result["predicted_text"]
-    today_history = prep_result["today_history"]
 
     confirmed_text, status = run_confirm_dialog(
         predicted_text, timeout_seconds=300, history=today_history
