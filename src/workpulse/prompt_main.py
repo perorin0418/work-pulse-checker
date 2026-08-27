@@ -11,17 +11,9 @@ from workpulse.confirm_ui import run_confirm_dialog
 from workpulse.countdown_ui import run_countdown_window
 from workpulse.haiku import predict_work_content
 from workpulse.parquet_io import append_row, read_or_empty
-from workpulse.paths import AUDIT_COLUMNS, audit_path, work_content_path
+from workpulse.paths import AUDIT_COLUMNS, WORK_CONTENT_COLUMNS, audit_path, work_content_path
 from workpulse.screenshot import capture_png_bytes_mss, try_save_screenshot
-
-WORK_CONTENT_COLUMNS = [
-    "slot_start",
-    "slot_end",
-    "predicted_text",
-    "confirmed_text",
-    "status",
-    "screenshot_path",
-]
+from workpulse.work_history import recent_confirmed_texts
 
 
 def slot_bounds(now: datetime) -> tuple[datetime, datetime]:
@@ -60,12 +52,16 @@ def run() -> None:
     audit_df = read_or_empty(audit_path(now.date()), AUDIT_COLUMNS)
     summary_text = summarize(audit_df, now)
 
+    today_history = recent_confirmed_texts(now.date())
+
     if shot_path is not None:
-        predicted_text = predict_work_content(summary_text, shot_path)
+        predicted_text = predict_work_content(summary_text, shot_path, today_history=today_history)
     else:
         predicted_text = ""
 
-    confirmed_text, status = run_confirm_dialog(predicted_text, timeout_seconds=300)
+    confirmed_text, status = run_confirm_dialog(
+        predicted_text, timeout_seconds=300, history=today_history
+    )
 
     row = build_work_content_row(slot_start, slot_end, predicted_text, confirmed_text, status, shot_path)
     append_row(work_content_path(now.date()), row, WORK_CONTENT_COLUMNS)

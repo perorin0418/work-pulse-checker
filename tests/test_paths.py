@@ -4,6 +4,7 @@ from pathlib import Path
 
 from workpulse.paths import (
     AUDIT_COLUMNS,
+    WORK_CONTENT_COLUMNS,
     data_dir_for_date,
     audit_path,
     work_content_path,
@@ -39,4 +40,15 @@ def test_audit_columns_schema():
         "foreground_window_title",
         "foreground_process_name",
         "idle_seconds",
+    ]
+
+
+def test_work_content_columns_schema():
+    assert WORK_CONTENT_COLUMNS == [
+        "slot_start",
+        "slot_end",
+        "predicted_text",
+        "confirmed_text",
+        "status",
+        "screenshot_path",
     ]

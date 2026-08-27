@@ -7,16 +7,7 @@ from datetime import date
 import pandas as pd
 
 from workpulse.parquet_io import read_or_empty
-from workpulse.paths import work_content_path
-
-WORK_CONTENT_COLUMNS = [
-    "slot_start",
-    "slot_end",
-    "predicted_text",
-    "confirmed_text",
-    "status",
-    "screenshot_path",
-]
+from workpulse.paths import WORK_CONTENT_COLUMNS, work_content_path
 
 
 def load_slots(target_date: date) -> pd.DataFrame:
