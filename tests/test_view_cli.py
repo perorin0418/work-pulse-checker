@@ -5,7 +5,9 @@ import pytest
 
 from workpulse.view_cli import (
     WORK_CONTENT_COLUMNS,
+    compute_work_summary,
     format_slot_line,
+    format_summary_lines,
     load_slots,
     parse_target_date,
     run_interactive,
@@ -103,3 +105,69 @@ def test_run_interactive_edits_selected_slot(tmp_path, monkeypatch):
 
 def test_parse_target_date():
     assert parse_target_date(["--date", "2026-08-26"]) == date(2026, 8, 26)
+
+
+def test_compute_work_summary_aggregates_by_confirmed_text_desc():
+    df = pd.DataFrame(
+        [
+            {
+                "slot_start": datetime(2026, 8, 26, 9, 0, 0),
+                "slot_end": datetime(2026, 8, 26, 9, 30, 0),
+                "confirmed_text": "資料作成",
+                "status": "confirmed",
+            },
+            {
+                "slot_start": datetime(2026, 8, 26, 9, 30, 0),
+                "slot_end": datetime(2026, 8, 26, 10, 0, 0),
+                "confirmed_text": "会議",
+                "status": "confirmed",
+            },
+            {
+                "slot_start": datetime(2026, 8, 26, 10, 0, 0),
+                "slot_end": datetime(2026, 8, 26, 11, 0, 0),
+                "confirmed_text": "資料作成",
+                "status": "confirmed",
+            },
+            {
+                "slot_start": datetime(2026, 8, 26, 11, 0, 0),
+                "slot_end": datetime(2026, 8, 26, 11, 30, 0),
+                "confirmed_text": "",
+                "status": "confirmed",
+            },
+        ]
+    )
+
+    summary = compute_work_summary(df)
+
+    assert summary[0][0] == "資料作成"
+    assert summary[0][1] == pd.Timedelta(hours=1, minutes=30)
+    assert summary[1][0] == "会議"
+    assert summary[1][1] == pd.Timedelta(minutes=30)
+
+
+def test_format_summary_lines_shows_hhmm_and_total():
+    df = pd.DataFrame(
+        [
+            {
+                "slot_start": datetime(2026, 8, 26, 9, 0, 0),
+                "slot_end": datetime(2026, 8, 26, 10, 30, 0),
+                "confirmed_text": "資料作成",
+                "status": "confirmed",
+            },
+        ]
+    )
+
+    lines = format_summary_lines(df)
+
+    assert any("01:30" in line and "資料作成" in line for line in lines)
+    assert any("合計" in line and "01:30" in line for line in lines)
+
+
+def test_run_interactive_prints_summary_after_editing(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch, date(2026, 8, 26))
+    outputs = []
+
+    run_interactive(date(2026, 8, 26), input_func=lambda prompt: "", print_func=outputs.append)
+
+    assert any("作業サマリー" in line for line in outputs)
+    assert any("00:30" in line and "資料作成" in line for line in outputs)
