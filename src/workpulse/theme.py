@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 """アプリ全体で共有するモダンUIテーマ定義。GUI依存のため自動テスト対象外。"""
 
 FONT_FAMILY = "Yu Gothic UI"
@@ -21,6 +23,47 @@ COLOR_ACCENT_HOVER = "#8079FF"
 COLOR_ACCENT_TEXT = "#FFFFFF"
 COLOR_WARN_ACCENT = "#FF8C42"  # カウントダウン用の暖色アクセント
 COLOR_WARN_TEXT = "#FFD166"
+
+
+def enable_windows_dpi_awareness() -> None:
+    """Windowsのディスプレイ拡大率を考慮させ、文字が小さく描画される問題を防ぐ。
+
+    tkinterはデフォルトでDPI非対応として扱われ、OSがウィンドウを拡大率分だけ
+    ビットマップ拡大するため文字がぼやけて小さく見える。プロセスをDPI対応に
+    することで、Tkinter自身に正しい解像度で描画させる。Windows以外では何もしない。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        try:
+            # Per-Monitor v2 DPI awareness（Windows 10 1703+）
+            ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
+        except Exception:
+            try:
+                # System DPI awareness（Windows 8.1+）
+                ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            except Exception:
+                # Windows Vista〜8向けフォールバック
+                ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+def apply_tk_scaling(root) -> None:
+    """OSのディスプレイ拡大率に合わせてtkinterの論理DPIスケーリングを設定する。
+
+    enable_windows_dpi_awareness() でプロセスをDPI対応にした後は、
+    tkinterが実DPIを取得できるようになるため、tk_scaling を実測値に合わせて
+    明示的に更新し、フォント・ウィジェットサイズを画面と一致させる。
+    """
+    try:
+        # 96 DPIを基準(scaling=1.0)としてWindowsの拡大率と対応させる
+        actual_dpi = root.winfo_fpixels("1i")
+        root.tk.call("tk", "scaling", actual_dpi / 72.0)
+    except Exception:
+        pass
 
 
 def apply_ttk_theme(root) -> "object":

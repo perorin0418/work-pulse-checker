@@ -47,9 +47,14 @@ def run_countdown_window(total_seconds: int = 30) -> None:
         COLOR_WARN_TEXT,
         FONT_LARGE_BOLD,
         FONT_NORMAL,
+        apply_tk_scaling,
+        enable_windows_dpi_awareness,
     )
 
+    enable_windows_dpi_awareness()
+
     root = tk.Tk()
+    apply_tk_scaling(root)
     root.overrideredirect(True)
     root.attributes("-topmost", True)
     root.attributes("-alpha", 0.97)

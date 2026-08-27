@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,9 +18,15 @@ from workpulse.work_history import recent_confirmed_texts
 
 
 def slot_bounds(now: datetime) -> tuple[datetime, datetime]:
+    """now を起点に「直前に終わった30分枠」の開始・終了時刻を返す。
+
+    30分間隔タスクは各枠の終了直後（例: 14:30）に起動される想定。
+    そのため slot_end は now 以下で直近の30分境界に切り捨て、
+    slot_start はその30分前とする（例: now=14:30 -> 14:00〜14:30）。
+    """
     minute = 0 if now.minute < 30 else 30
-    slot_start = now.replace(minute=minute, second=0, microsecond=0)
-    slot_end = slot_start + timedelta(minutes=30)
+    slot_end = now.replace(minute=minute, second=0, microsecond=0)
+    slot_start = slot_end - timedelta(minutes=30)
     return slot_start, slot_end
 
 
@@ -45,19 +52,39 @@ def run() -> None:
     now = datetime.now()
     slot_start, slot_end = slot_bounds(now)
 
+    # カウントダウン表示中にスクリーンショット撮影とAI推定をバックグラウンドで
+    # 完了させておく。直列にすると推定完了までダイアログ表示が数秒〜数十秒
+    # 遅延するため、カウントダウンの待ち時間を無駄なく使う。
+    prep_result: dict = {}
+
+    def prepare_prediction() -> None:
+        shot_path = try_save_screenshot(now, capture_png_bytes_mss)
+
+        audit_df = read_or_empty(audit_path(now.date()), AUDIT_COLUMNS)
+        summary_text = summarize(audit_df, now)
+
+        today_history = recent_confirmed_texts(now.date())
+
+        if shot_path is not None:
+            predicted_text = predict_work_content(summary_text, shot_path, today_history=today_history)
+        else:
+            predicted_text = ""
+
+        prep_result["shot_path"] = shot_path
+        prep_result["predicted_text"] = predicted_text
+        prep_result["today_history"] = today_history
+
+    prep_thread = threading.Thread(target=prepare_prediction, daemon=True)
+    prep_thread.start()
+
     run_countdown_window(30)
 
-    shot_path = try_save_screenshot(now, capture_png_bytes_mss)
+    # カウントダウン(30秒)より予測処理が長引いた場合のみ、ここで待つ。
+    prep_thread.join()
 
-    audit_df = read_or_empty(audit_path(now.date()), AUDIT_COLUMNS)
-    summary_text = summarize(audit_df, now)
-
-    today_history = recent_confirmed_texts(now.date())
-
-    if shot_path is not None:
-        predicted_text = predict_work_content(summary_text, shot_path, today_history=today_history)
-    else:
-        predicted_text = ""
+    shot_path = prep_result["shot_path"]
+    predicted_text = prep_result["predicted_text"]
+    today_history = prep_result["today_history"]
 
     confirmed_text, status = run_confirm_dialog(
         predicted_text, timeout_seconds=300, history=today_history

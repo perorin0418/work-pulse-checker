@@ -41,8 +41,12 @@ def run_confirm_dialog(
         FONT_NORMAL,
         FONT_SMALL,
         FONT_TITLE,
+        apply_tk_scaling,
         apply_ttk_theme,
+        enable_windows_dpi_awareness,
     )
+
+    enable_windows_dpi_awareness()
 
     history = history or []
     history_rows = chunk_history_into_rows(history, items_per_row=3)
@@ -50,10 +54,10 @@ def run_confirm_dialog(
     result: dict = {"text": predicted_text, "status": "auto_confirmed"}
 
     root = tk.Tk()
+    apply_tk_scaling(root)
     root.title("作業内容の確認")
     root.attributes("-topmost", True)
     root.configure(bg=COLOR_BG)
-    root.geometry(f"520x{260 + 44 * len(history_rows)}" if history else "520x260")
     root.minsize(360, 200)
     root.resizable(True, True)
 
@@ -85,6 +89,7 @@ def run_confirm_dialog(
     entry = tk.Text(
         entry_border,
         wrap="word",
+        height=6,
         bg=COLOR_SURFACE,
         fg=COLOR_TEXT,
         insertbackground=COLOR_TEXT,
@@ -137,6 +142,14 @@ def run_confirm_dialog(
     button_row = tk.Frame(container, bg=COLOR_BG)
     button_row.grid(row=next_row, column=0, sticky="e", pady=(4, 0))
     ttk.Button(button_row, text="確定", style="Modern.TButton", command=on_confirm).pack()
+
+    # DPIスケーリング適用後の実測サイズでウィンドウサイズを決める。
+    # 固定ピクセル値のgeometryを使うと、高DPI環境でウィジェットの要求サイズが
+    # ウィンドウ枠をはみ出し、履歴ボタンや確定ボタンが非表示になるため。
+    root.update_idletasks()
+    width = max(root.winfo_reqwidth() + 20, 360)
+    height = max(root.winfo_reqheight() + 20, 200)
+    root.geometry(f"{width}x{height}")
 
     def on_timeout() -> None:
         text, status = determine_result(False, "", predicted_text)
