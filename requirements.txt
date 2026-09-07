@@ -1,0 +1,5 @@
+pandas
+pyarrow
+mss
+pywin32
+psutil
