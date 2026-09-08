@@ -178,13 +178,40 @@ def run_interactive(target_date: date, input_func=input, print_func=print) -> No
         print_func(line)
 
 
-def parse_target_date(argv: list[str]) -> date:
+def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="作業内容の閲覧・編集")
     parser.add_argument("--date", required=True, help="YYYY-MM-DD")
-    args = parser.parse_args(argv)
-    return date.fromisoformat(args.date)
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="対話プロンプトを開かず、指定日の作業サマリーのみを出力して終了する",
+    )
+    return parser.parse_args(argv)
+
+
+def parse_target_date(argv: list[str]) -> date:
+    """後方互換用。--date のみをパースして date を返す。"""
+    return date.fromisoformat(parse_args(argv).date)
+
+
+def print_summary(target_date: date, print_func=print) -> None:
+    """指定日のサマリーのみを非対話で出力する（欠落枠を含む集計）。"""
+    df = load_slots(target_date)
+    if df.empty:
+        print_func(f"{target_date.isoformat()} の記録はありません")
+        return
+    lines = format_summary_lines(df)
+    if not lines:
+        print_func(f"{target_date.isoformat()} の確定済み作業内容はありません")
+        return
+    for line in lines:
+        print_func(line)
 
 
 def main(argv: list[str] | None = None) -> None:
-    target_date = parse_target_date(argv if argv is not None else sys.argv[1:])
-    run_interactive(target_date)
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+    target_date = date.fromisoformat(args.date)
+    if args.summary:
+        print_summary(target_date)
+    else:
+        run_interactive(target_date)

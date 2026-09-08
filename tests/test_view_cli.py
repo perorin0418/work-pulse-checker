@@ -10,7 +10,10 @@ from workpulse.view_cli import (
     format_summary_lines,
     generate_missing_slots,
     load_slots,
+    main,
+    parse_args,
     parse_target_date,
+    print_summary,
     run_interactive,
     update_confirmed_text,
 )
@@ -306,3 +309,71 @@ def test_run_interactive_shows_and_edits_missing_slot(tmp_path, monkeypatch):
     updated_row = df[df["slot_start"] == pd.Timestamp(2026, 8, 26, 10, 30, 0)].iloc[0]
     assert updated_row["confirmed_text"] == "休憩"
     assert updated_row["status"] == "confirmed"
+
+
+def test_parse_args_defaults_summary_to_false():
+    args = parse_args(["--date", "2026-08-26"])
+    assert args.date == "2026-08-26"
+    assert args.summary is False
+
+
+def test_parse_args_accepts_summary_flag():
+    args = parse_args(["--date", "2026-08-26", "--summary"])
+    assert args.summary is True
+
+
+def test_print_summary_outputs_summary_lines_non_interactively(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch, date(2026, 8, 26))
+    outputs = []
+
+    print_summary(date(2026, 8, 26), print_func=outputs.append)
+
+    assert any("作業サマリー" in line for line in outputs)
+    assert any("00:30" in line and "資料作成" in line for line in outputs)
+    assert any("合計" in line for line in outputs)
+
+
+def test_print_summary_reports_no_records_when_file_missing(tmp_path, monkeypatch):
+    from workpulse import paths as paths_module
+
+    monkeypatch.setattr(paths_module, "DATA_ROOT", tmp_path)
+    outputs = []
+
+    print_summary(date(2026, 8, 27), print_func=outputs.append)
+
+    assert any("記録はありません" in line for line in outputs)
+
+
+def test_print_summary_reports_no_confirmed_work_when_all_unconfirmed(tmp_path, monkeypatch):
+    from workpulse import paths as paths_module
+
+    monkeypatch.setattr(paths_module, "DATA_ROOT", tmp_path)
+    from workpulse.parquet_io import append_row
+
+    target_date = date(2026, 8, 26)
+    append_row(
+        paths_module.work_content_path(target_date),
+        {
+            "slot_start": datetime(2026, 8, 26, 9, 0, 0),
+            "slot_end": datetime(2026, 8, 26, 9, 30, 0),
+            "predicted_text": "",
+            "confirmed_text": "",
+            "status": "missing",
+            "screenshot_path": "",
+        },
+        WORK_CONTENT_COLUMNS,
+    )
+    outputs = []
+
+    print_summary(target_date, print_func=outputs.append)
+
+    assert any("確定済み作業内容はありません" in line for line in outputs)
+
+
+def test_main_with_summary_flag_calls_print_summary_not_interactive(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, monkeypatch, date(2026, 8, 26))
+
+    main(["--date", "2026-08-26", "--summary"])
+
+    captured = capsys.readouterr()
+    assert "作業サマリー" in captured.out
