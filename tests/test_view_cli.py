@@ -426,8 +426,9 @@ def test_build_daily_report_records_maps_summary_to_report_fields():
     assert records[1]["作業時間"] == "00:30"
     for record in records:
         assert set(record.keys()) == set(DAILY_REPORT_FIELDS)
+        assert record["業務種別"] == "直接原価"
         for field in DAILY_REPORT_FIELDS:
-            if field not in ("作業内容", "作業時間"):
+            if field not in ("業務種別", "作業内容", "作業時間"):
                 assert record[field] == ""
 
 
@@ -463,7 +464,7 @@ def test_print_daily_report_json_outputs_parseable_json_for_seeded_day(tmp_path,
     parsed = json.loads(outputs[0])
     assert parsed == [
         {
-            "業務種別": "",
+            "業務種別": "直接原価",
             "ジョブコード": "",
             "作業時間": "00:30",
             "詳細コード": "",
