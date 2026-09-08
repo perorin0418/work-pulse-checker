@@ -1,11 +1,16 @@
 from datetime import date, datetime
 
+import json
+
 import pandas as pd
 import pytest
 
 from workpulse.view_cli import (
+    DAILY_REPORT_FIELDS,
     WORK_CONTENT_COLUMNS,
+    build_daily_report_records,
     compute_work_summary,
+    format_daily_report_json,
     format_slot_line,
     format_summary_lines,
     generate_missing_slots,
@@ -13,6 +18,7 @@ from workpulse.view_cli import (
     main,
     parse_args,
     parse_target_date,
+    print_daily_report_json,
     print_summary,
     run_interactive,
     update_confirmed_text,
@@ -377,3 +383,115 @@ def test_main_with_summary_flag_calls_print_summary_not_interactive(tmp_path, mo
 
     captured = capsys.readouterr()
     assert "作業サマリー" in captured.out
+
+
+def test_daily_report_fields_match_expected_order():
+    assert DAILY_REPORT_FIELDS == [
+        "業務種別",
+        "ジョブコード",
+        "作業時間",
+        "詳細コード",
+        "作業場所",
+        "作業内容",
+        "状況",
+        "保留・宿題事項",
+        "課題・悩み",
+    ]
+
+
+def test_build_daily_report_records_maps_summary_to_report_fields():
+    df = pd.DataFrame(
+        [
+            {
+                "slot_start": datetime(2026, 8, 26, 9, 0, 0),
+                "slot_end": datetime(2026, 8, 26, 10, 30, 0),
+                "confirmed_text": "資料作成",
+                "status": "confirmed",
+            },
+            {
+                "slot_start": datetime(2026, 8, 26, 10, 30, 0),
+                "slot_end": datetime(2026, 8, 26, 11, 0, 0),
+                "confirmed_text": "会議",
+                "status": "confirmed",
+            },
+        ]
+    )
+
+    records = build_daily_report_records(df)
+
+    assert len(records) == 2
+    assert records[0]["作業内容"] == "資料作成"
+    assert records[0]["作業時間"] == "01:30"
+    assert records[1]["作業内容"] == "会議"
+    assert records[1]["作業時間"] == "00:30"
+    for record in records:
+        assert set(record.keys()) == set(DAILY_REPORT_FIELDS)
+        for field in DAILY_REPORT_FIELDS:
+            if field not in ("作業内容", "作業時間"):
+                assert record[field] == ""
+
+
+def test_build_daily_report_records_returns_empty_list_when_no_confirmed_work():
+    assert build_daily_report_records(pd.DataFrame()) == []
+
+
+def test_format_daily_report_json_is_valid_json_matching_records():
+    df = pd.DataFrame(
+        [
+            {
+                "slot_start": datetime(2026, 8, 26, 9, 0, 0),
+                "slot_end": datetime(2026, 8, 26, 9, 30, 0),
+                "confirmed_text": "資料作成",
+                "status": "confirmed",
+            },
+        ]
+    )
+
+    text = format_daily_report_json(df)
+    parsed = json.loads(text)
+
+    assert parsed == build_daily_report_records(df)
+
+
+def test_print_daily_report_json_outputs_parseable_json_for_seeded_day(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch, date(2026, 8, 26))
+    outputs = []
+
+    print_daily_report_json(date(2026, 8, 26), print_func=outputs.append)
+
+    assert len(outputs) == 1
+    parsed = json.loads(outputs[0])
+    assert parsed == [
+        {
+            "業務種別": "",
+            "ジョブコード": "",
+            "作業時間": "00:30",
+            "詳細コード": "",
+            "作業場所": "",
+            "作業内容": "資料作成",
+            "状況": "",
+            "保留・宿題事項": "",
+            "課題・悩み": "",
+        }
+    ]
+
+
+def test_print_daily_report_json_outputs_empty_array_when_no_records(tmp_path, monkeypatch):
+    from workpulse import paths as paths_module
+
+    monkeypatch.setattr(paths_module, "DATA_ROOT", tmp_path)
+    outputs = []
+
+    print_daily_report_json(date(2026, 8, 27), print_func=outputs.append)
+
+    assert json.loads(outputs[0]) == []
+
+
+def test_main_with_daily_report_json_flag_outputs_json(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, monkeypatch, date(2026, 8, 26))
+
+    main(["--date", "2026-08-26", "--daily-report-json"])
+
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.out)
+    assert parsed[0]["作業内容"] == "資料作成"
