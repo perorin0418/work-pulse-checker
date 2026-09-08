@@ -7,6 +7,7 @@ from datetime import date
 
 import pandas as pd
 
+from workpulse.job_code import classify_job_code
 from workpulse.parquet_io import read_or_empty
 from workpulse.paths import WORK_CONTENT_COLUMNS, work_content_path
 
@@ -119,11 +120,14 @@ def format_summary_lines(df: pd.DataFrame) -> list[str]:
     return lines
 
 
-def build_daily_report_records(df: pd.DataFrame) -> list[dict[str, str]]:
+def build_daily_report_records(
+    df: pd.DataFrame, classify_job_code_func=classify_job_code
+) -> list[dict[str, str]]:
     """作業サマリー（confirmed_text ごとの合計時間）を日報管理アプリの入力形式に変換する。
 
     各作業サマリーの1行が1レコードに対応する。「業務種別」は固定値「直接原価」、
-    「作業内容」に confirmed_text、「作業時間」に HH:MM 形式の合計時間を入れ、
+    「作業内容」に confirmed_text、「作業時間」に HH:MM 形式の合計時間を入れる。
+    「ジョブコード」は作業内容から claude haiku（classify_job_code_func）で判定する。
     それ以外の項目は空文字にする。
     """
     summary = compute_work_summary(df)
@@ -131,14 +135,15 @@ def build_daily_report_records(df: pd.DataFrame) -> list[dict[str, str]]:
     for text, duration in summary:
         record = {field: "" for field in DAILY_REPORT_FIELDS}
         record["業務種別"] = DAILY_REPORT_WORK_TYPE
+        record["ジョブコード"] = classify_job_code_func(text)
         record["作業時間"] = format_duration(duration)
         record["作業内容"] = text
         records.append(record)
     return records
 
 
-def format_daily_report_json(df: pd.DataFrame) -> str:
-    records = build_daily_report_records(df)
+def format_daily_report_json(df: pd.DataFrame, classify_job_code_func=classify_job_code) -> str:
+    records = build_daily_report_records(df, classify_job_code_func=classify_job_code_func)
     return json.dumps(records, ensure_ascii=False, indent=2)
 
 
@@ -252,10 +257,12 @@ def print_summary(target_date: date, print_func=print) -> None:
         print_func(line)
 
 
-def print_daily_report_json(target_date: date, print_func=print) -> None:
+def print_daily_report_json(
+    target_date: date, print_func=print, classify_job_code_func=classify_job_code
+) -> None:
     """指定日の作業サマリーを日報管理アプリ入力形式のJSONで非対話出力する。"""
     df = load_slots(target_date)
-    print_func(format_daily_report_json(df))
+    print_func(format_daily_report_json(df, classify_job_code_func=classify_job_code_func))
 
 
 def main(argv: list[str] | None = None) -> None:

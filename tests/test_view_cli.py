@@ -417,7 +417,7 @@ def test_build_daily_report_records_maps_summary_to_report_fields():
         ]
     )
 
-    records = build_daily_report_records(df)
+    records = build_daily_report_records(df, classify_job_code_func=lambda text: "コードX")
 
     assert len(records) == 2
     assert records[0]["作業内容"] == "資料作成"
@@ -427,9 +427,33 @@ def test_build_daily_report_records_maps_summary_to_report_fields():
     for record in records:
         assert set(record.keys()) == set(DAILY_REPORT_FIELDS)
         assert record["業務種別"] == "直接原価"
+        assert record["ジョブコード"] == "コードX"
         for field in DAILY_REPORT_FIELDS:
-            if field not in ("業務種別", "作業内容", "作業時間"):
+            if field not in ("業務種別", "ジョブコード", "作業内容", "作業時間"):
                 assert record[field] == ""
+
+
+def test_build_daily_report_records_passes_confirmed_text_to_classifier():
+    df = pd.DataFrame(
+        [
+            {
+                "slot_start": datetime(2026, 8, 26, 9, 0, 0),
+                "slot_end": datetime(2026, 8, 26, 9, 30, 0),
+                "confirmed_text": "朝会",
+                "status": "confirmed",
+            },
+        ]
+    )
+    captured = []
+
+    def fake_classifier(text):
+        captured.append(text)
+        return "任意コード"
+
+    records = build_daily_report_records(df, classify_job_code_func=fake_classifier)
+
+    assert captured == ["朝会"]
+    assert records[0]["ジョブコード"] == "任意コード"
 
 
 def test_build_daily_report_records_returns_empty_list_when_no_confirmed_work():
@@ -448,24 +472,29 @@ def test_format_daily_report_json_is_valid_json_matching_records():
         ]
     )
 
-    text = format_daily_report_json(df)
+    fake_classifier = lambda work_text: "コードY"
+    text = format_daily_report_json(df, classify_job_code_func=fake_classifier)
     parsed = json.loads(text)
 
-    assert parsed == build_daily_report_records(df)
+    assert parsed == build_daily_report_records(df, classify_job_code_func=fake_classifier)
 
 
 def test_print_daily_report_json_outputs_parseable_json_for_seeded_day(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, date(2026, 8, 26))
     outputs = []
 
-    print_daily_report_json(date(2026, 8, 26), print_func=outputs.append)
+    print_daily_report_json(
+        date(2026, 8, 26),
+        print_func=outputs.append,
+        classify_job_code_func=lambda work_text: "2502044_【C25】標準準拠システム保守（共通機能）",
+    )
 
     assert len(outputs) == 1
     parsed = json.loads(outputs[0])
     assert parsed == [
         {
             "業務種別": "直接原価",
-            "ジョブコード": "",
+            "ジョブコード": "2502044_【C25】標準準拠システム保守（共通機能）",
             "作業時間": "00:30",
             "詳細コード": "",
             "作業場所": "",
@@ -483,16 +512,25 @@ def test_print_daily_report_json_outputs_empty_array_when_no_records(tmp_path, m
     monkeypatch.setattr(paths_module, "DATA_ROOT", tmp_path)
     outputs = []
 
-    print_daily_report_json(date(2026, 8, 27), print_func=outputs.append)
+    print_daily_report_json(
+        date(2026, 8, 27),
+        print_func=outputs.append,
+        classify_job_code_func=lambda work_text: "呼ばれないはず",
+    )
 
     assert json.loads(outputs[0]) == []
 
 
 def test_main_with_daily_report_json_flag_outputs_json(tmp_path, monkeypatch, capsys):
     _seed(tmp_path, monkeypatch, date(2026, 8, 26))
+    monkeypatch.setattr(
+        "workpulse.view_cli.classify_job_code",
+        lambda work_text: "2502044_【C25】標準準拠システム保守（共通機能）",
+    )
 
     main(["--date", "2026-08-26", "--daily-report-json"])
 
     captured = capsys.readouterr()
     parsed = json.loads(captured.out)
     assert parsed[0]["作業内容"] == "資料作成"
+    assert parsed[0]["ジョブコード"] == "2502044_【C25】標準準拠システム保守（共通機能）"
