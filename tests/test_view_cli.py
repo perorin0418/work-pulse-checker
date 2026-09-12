@@ -473,10 +473,19 @@ def test_format_daily_report_json_is_valid_json_matching_records():
     )
 
     fake_classifier = lambda work_text: "コードY"
-    text = format_daily_report_json(df, classify_job_code_func=fake_classifier)
+    fake_detail = lambda work_text, job_code: "Z-05"
+    text = format_daily_report_json(
+        df,
+        classify_job_code_func=fake_classifier,
+        classify_detail_code_func=fake_detail,
+    )
     parsed = json.loads(text)
 
-    assert parsed == build_daily_report_records(df, classify_job_code_func=fake_classifier)
+    assert parsed == build_daily_report_records(
+        df,
+        classify_job_code_func=fake_classifier,
+        classify_detail_code_func=fake_detail,
+    )
 
 
 def test_print_daily_report_json_outputs_parseable_json_for_seeded_day(tmp_path, monkeypatch):
@@ -487,6 +496,7 @@ def test_print_daily_report_json_outputs_parseable_json_for_seeded_day(tmp_path,
         date(2026, 8, 26),
         print_func=outputs.append,
         classify_job_code_func=lambda work_text: "2502044_【C25】標準準拠システム保守（共通機能）",
+        classify_detail_code_func=lambda work_text, job_code: "B-10",
     )
 
     assert len(outputs) == 1
@@ -496,7 +506,7 @@ def test_print_daily_report_json_outputs_parseable_json_for_seeded_day(tmp_path,
             "業務種別": "直接原価",
             "ジョブコード": "2502044_【C25】標準準拠システム保守（共通機能）",
             "作業時間": "00:30",
-            "詳細コード": "",
+            "詳細コード": "B-10",
             "作業場所": "",
             "作業内容": "資料作成",
             "状況": "",
