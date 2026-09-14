@@ -365,3 +365,28 @@ python submit_report.py --date 2026-09-11 --json records.json  # JSONから登�
 bat に渡した引数はそのまま `submit_report.py` に渡る。
 
 終了コードは 0=成功、1=中止または失敗、2=日付の形式誤り。
+
+### bat から記録を編集する（Windows）
+
+`edit_report.bat` をダブルクリックすると対象日を聞かれ、その日の作業記録を
+一覧表示して番号を選んで編集できる（`view.py` と同じ対話）。
+
+```
+対象日を入力してください [YYYY-MM-DD] (既定: 2026-09-11):
+[0] 09:00-09:30 (confirmed) 朝会
+[1] 09:30-10:00 (confirmed) 実装作業
+編集する番号を入力してください（何も入力せず終了する場合はEnter）
+>
+```
+
+引数は `view.py` にそのまま渡るので、日付やオプションを指定した起動もできる。
+
+```bash
+python edit_report.py                              # 日付を聞いてから対話編集
+python edit_report.py --date 2026-09-11            # 日付を指定して対話編集
+python edit_report.py --date 2026-09-11 --summary  # サマリーのみ表示
+```
+
+`--date` を明示した場合は日付を聞かない。空入力なら前営業日を使う。
+
+運用の流れは「`edit_report.bat` で内容を整える → `submit_report.bat` で登録」。
