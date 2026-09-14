@@ -1,0 +1,9 @@
+{
+  "provider": "hrmos",
+  "base_url": "https://p.ieyasu.co/gcom/",
+  "login_id": "you@example.com",
+  "options": {
+    "headless": true,
+    "timeout_ms": 30000
+  }
+}
