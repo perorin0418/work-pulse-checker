@@ -27,6 +27,11 @@ DAILY_REPORT_FIELDS = [
 ]
 DAILY_REPORT_WORK_TYPE = "直接原価"
 
+# 記録が1件も無い日を編集するときに用意する枠の既定の範囲（時）と刻み（分）。
+DEFAULT_BLANK_START_HOUR = 9
+DEFAULT_BLANK_END_HOUR = 18
+SLOT_MINUTES = 30
+
 
 def generate_missing_slots(df: pd.DataFrame) -> pd.DataFrame:
     """記録済みスロットの最初〜最後の範囲内で、記録が抜けている30分枠を補完行として返す。
@@ -77,6 +82,76 @@ def load_slots(target_date: date) -> pd.DataFrame:
         df = pd.concat([df, missing], ignore_index=True)
 
     return df.sort_values("slot_start").reset_index(drop=True)
+
+
+def generate_blank_slots(
+    target_date: date,
+    start_hour: int = DEFAULT_BLANK_START_HOUR,
+    end_hour: int = DEFAULT_BLANK_END_HOUR,
+) -> pd.DataFrame:
+    """記録が1件も無い日のために、空の30分枠を並べて返す。
+
+    監視ログが取れていない日でも、手入力で日報を作れるようにするためのもの。
+    すべて status="missing" とし、内容を確定した枠だけがファイルに保存される。
+    """
+    rows = []
+    cursor = pd.Timestamp(target_date) + pd.Timedelta(hours=start_hour)
+    end = pd.Timestamp(target_date) + pd.Timedelta(hours=end_hour)
+    while cursor < end:
+        rows.append(
+            {
+                "slot_start": cursor,
+                "slot_end": cursor + pd.Timedelta(minutes=SLOT_MINUTES),
+                "predicted_text": "",
+                "confirmed_text": "",
+                "status": "missing",
+                "screenshot_path": "",
+            }
+        )
+        cursor += pd.Timedelta(minutes=SLOT_MINUTES)
+
+    return pd.DataFrame(rows, columns=WORK_CONTENT_COLUMNS)
+
+
+def merge_blank_slots(
+    df: pd.DataFrame,
+    target_date: date,
+    start_hour: int = DEFAULT_BLANK_START_HOUR,
+    end_hour: int = DEFAULT_BLANK_END_HOUR,
+) -> pd.DataFrame:
+    """既存のスロットに空枠を重ねて、既定の時間帯を必ず埋めた一覧を返す。
+
+    既存行がある時間帯はそのまま残し、空いている時間帯だけ空枠で補う。
+    """
+    blank = generate_blank_slots(target_date, start_hour, end_hour)
+    if df.empty:
+        return blank
+
+    existing = set(pd.to_datetime(df["slot_start"]))
+    blank = blank[~blank["slot_start"].isin(existing)]
+    if blank.empty:
+        return df
+
+    merged = pd.concat([df, blank], ignore_index=True)
+    return merged.sort_values("slot_start").reset_index(drop=True)
+
+
+def load_slots_for_edit(
+    target_date: date,
+    fill_blank: bool = False,
+    start_hour: int = DEFAULT_BLANK_START_HOUR,
+    end_hour: int = DEFAULT_BLANK_END_HOUR,
+) -> pd.DataFrame:
+    """編集用にスロットを読む。
+
+    記録が1件も無い日は空枠を用意する。`fill_blank=True` のときは
+    記録がある日でも既定の時間帯を空枠で埋める（一から作成し始めた日に、
+    1件保存した時点で一覧が縮まないようにするため）。
+    """
+    df = load_slots(target_date)
+    if df.empty or fill_blank:
+        return merge_blank_slots(df, target_date, start_hour, end_hour)
+    return df
 
 
 def format_slot_line(index: int, row: pd.Series) -> str:
@@ -162,13 +237,16 @@ def format_daily_report_json(
     return json.dumps(records, ensure_ascii=False, indent=2)
 
 
-def update_confirmed_text(target_date: date, index: int, new_text: str) -> None:
+def update_confirmed_text(
+    target_date: date, index: int, new_text: str, fill_blank: bool = False
+) -> None:
     """index は load_slots() が返す一覧（欠落枠を含む）上の位置。
 
     欠落枠（ファイルに未保存の枠）が選択された場合は、その枠を新規行として
     ファイルに追加する。既存行が選択された場合は従来どおり更新する。
+    記録が1件も無い日は空枠の一覧を基準にする。
     """
-    display_df = load_slots(target_date)
+    display_df = load_slots_for_edit(target_date, fill_blank=fill_blank)
     if index < 0 or index >= len(display_df):
         raise IndexError(f"invalid slot index: {index}")
 
@@ -202,14 +280,22 @@ def update_confirmed_text(target_date: date, index: int, new_text: str) -> None:
         df = pd.concat([df, new_row], ignore_index=True)
 
     df = df.sort_values("slot_start").reset_index(drop=True)
+    # 監視ログが無い日は保存先ディレクトリも無いので作ってから書く。
+    path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
 
 
 def run_interactive(target_date: date, input_func=input, print_func=print) -> None:
-    df = load_slots(target_date)
+    df = load_slots_for_edit(target_date)
     if df.empty:
         print_func(f"{target_date.isoformat()} の記録はありません")
         return
+
+    # 監視ログが無い日は空枠から作り始める。保存しても一覧が縮まないよう、
+    # 以降の再読込でも空枠を埋め続ける。
+    started_blank = bool((df["status"] == "missing").all())
+    if started_blank:
+        print_func(f"{target_date.isoformat()} の記録はありません。新規に作成します")
 
     for i, row in df.iterrows():
         print_func(format_slot_line(i, row))
@@ -228,8 +314,8 @@ def run_interactive(target_date: date, input_func=input, print_func=print) -> No
         print_func(f"現在の内容: {current}")
         new_text = input_func("新しい内容（そのまま変更しない場合はEnter）: ").strip()
         if new_text != "":
-            update_confirmed_text(target_date, index, new_text)
-            df = load_slots(target_date)
+            update_confirmed_text(target_date, index, new_text, fill_blank=started_blank)
+            df = load_slots_for_edit(target_date, fill_blank=started_blank)
             print_func("保存しました")
         print_func(format_slot_line(index, df.loc[index]))
 
