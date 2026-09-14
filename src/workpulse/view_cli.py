@@ -11,6 +11,7 @@ from workpulse.detail_code import classify_detail_code
 from workpulse.job_code import classify_job_code
 from workpulse.parquet_io import read_or_empty
 from workpulse.paths import WORK_CONTENT_COLUMNS, work_content_path
+from workpulse.schedule import active_hours
 
 # 日報管理アプリへ転記する際の入力項目。作業内容(confirmed_text)と作業時間(duration)
 # 以外は自動入力できないため空文字で埋める。業務種別のみ固定値「直接原価」を入れる。
@@ -27,9 +28,9 @@ DAILY_REPORT_FIELDS = [
 ]
 DAILY_REPORT_WORK_TYPE = "直接原価"
 
-# 記録が1件も無い日を編集するときに用意する枠の既定の範囲（時）と刻み（分）。
-DEFAULT_BLANK_START_HOUR = 9
-DEFAULT_BLANK_END_HOUR = 18
+# 記録が1件も無い日を編集するときに用意する枠の範囲は、監視タスクが動く
+# 時間帯（タスクスケジューラーの稼働時間）に合わせる。既定は 7:00〜22:00。
+DEFAULT_BLANK_START_HOUR, DEFAULT_BLANK_END_HOUR = active_hours()
 SLOT_MINUTES = 30
 
 

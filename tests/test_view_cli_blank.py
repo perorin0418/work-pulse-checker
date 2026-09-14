@@ -69,8 +69,9 @@ def test_generate_blank_slots_covers_default_hours():
 
     expected = (DEFAULT_BLANK_END_HOUR - DEFAULT_BLANK_START_HOUR) * 2
     assert len(blank) == expected
-    assert blank.iloc[0]["slot_start"] == pd.Timestamp("2026-09-12 09:00")
-    assert blank.iloc[-1]["slot_end"] == pd.Timestamp("2026-09-12 18:00")
+    # 監視タスクの稼働時間帯（既定 7:00〜22:00）と一致する。
+    assert blank.iloc[0]["slot_start"] == pd.Timestamp(f"2026-09-12 {DEFAULT_BLANK_START_HOUR:02d}:00")
+    assert blank.iloc[-1]["slot_end"] == pd.Timestamp(f"2026-09-12 {DEFAULT_BLANK_END_HOUR:02d}:00")
     assert set(blank["status"]) == {"missing"}
     assert set(blank["confirmed_text"]) == {""}
 
@@ -79,6 +80,12 @@ def test_generate_blank_slots_respects_custom_hours():
     blank = generate_blank_slots(DAY, start_hour=13, end_hour=15)
     assert len(blank) == 4
     assert blank.iloc[0]["slot_start"] == pd.Timestamp("2026-09-12 13:00")
+
+
+def test_blank_range_follows_task_scheduler_hours():
+    from workpulse.schedule import active_hours
+
+    assert (DEFAULT_BLANK_START_HOUR, DEFAULT_BLANK_END_HOUR) == active_hours()
 
 
 def test_load_slots_for_edit_returns_blank_when_no_record(workdir):
@@ -103,8 +110,9 @@ def test_load_slots_for_edit_fills_blank_on_request(workdir):
     df = load_slots_for_edit(DAY, fill_blank=True)
 
     assert len(df) == (DEFAULT_BLANK_END_HOUR - DEFAULT_BLANK_START_HOUR) * 2
-    assert df.iloc[0]["confirmed_text"] == "朝会"  # 既存行は残る
-    assert df.iloc[1]["status"] == "missing"
+    at_nine = df[df["slot_start"] == pd.Timestamp("2026-09-12 09:00")]
+    assert list(at_nine["confirmed_text"]) == ["朝会"]  # 既存行は残る
+    assert set(df[df["slot_start"] != pd.Timestamp("2026-09-12 09:00")]["status"]) == {"missing"}
 
 
 def test_merge_blank_slots_does_not_duplicate_existing(workdir):
@@ -115,8 +123,10 @@ def test_merge_blank_slots_does_not_duplicate_existing(workdir):
 
     starts = list(merged["slot_start"])
     assert len(starts) == len(set(starts))
-    assert merged.iloc[0]["confirmed_text"] == "朝会"
-    assert merged.iloc[1]["confirmed_text"] == "実装"
+    assert starts == sorted(starts)
+    texts = dict(zip(merged["slot_start"], merged["confirmed_text"]))
+    assert texts[pd.Timestamp("2026-09-12 09:00")] == "朝会"
+    assert texts[pd.Timestamp("2026-09-12 09:30")] == "実装"
 
 
 def test_update_creates_directory_when_missing(workdir):
@@ -127,7 +137,9 @@ def test_update_creates_directory_when_missing(workdir):
 
     saved = pd.read_parquet(work_content_path(DAY))
     assert list(saved["confirmed_text"]) == ["朝会"]
-    assert saved.iloc[0]["slot_start"] == pd.Timestamp("2026-09-12 09:00")
+    assert saved.iloc[0]["slot_start"] == pd.Timestamp(
+        f"2026-09-12 {DEFAULT_BLANK_START_HOUR:02d}:00"
+    )
 
 
 def test_interactive_creates_record_from_scratch(workdir):
@@ -149,8 +161,11 @@ def test_interactive_keeps_slot_numbering_after_save(workdir):
 
     saved = pd.read_parquet(work_content_path(DAY)).sort_values("slot_start")
     assert list(saved["confirmed_text"]) == ["朝会", "午後の作業"]
-    # 番号5は 11:30-12:00 の枠（9:00 から30分刻み）。
-    assert saved.iloc[1]["slot_start"] == pd.Timestamp("2026-09-12 11:30")
+    # 番号5は稼働開始から30分刻みで5つ目の枠。
+    expected = pd.Timestamp(f"2026-09-12 {DEFAULT_BLANK_START_HOUR:02d}:00") + pd.Timedelta(
+        minutes=30 * 5
+    )
+    assert saved.iloc[1]["slot_start"] == expected
 
 
 def test_interactive_on_existing_day_is_unchanged(workdir):
