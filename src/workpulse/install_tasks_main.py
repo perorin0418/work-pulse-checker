@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -27,34 +28,42 @@ def task_definitions(project_root: Path) -> list[dict]:
     ]
 
 
-def resolve_silent_python_executable(python_exe: str) -> str:
-    """コンソールを開かずに実行できる `pythonw.exe` があればそちらを使う。
+def resolve_uv_executable(which: Callable[[str], Optional[str]] = shutil.which) -> str:
+    """コンソールを開かずに実行できる `uvw.exe` があればそちらを使う。
 
-    タスクスケジューラーが `python.exe`（コンソールサブシステム）を起動すると
-    実行のたびにコマンドプロンプトの黒いウィンドウが一瞬表示される。同じ場所に
-    `pythonw.exe`（GUIサブシステム、標準入出力を持たない）が存在すれば、それに
-    差し替えることでサイレント実行にできる。見つからない場合は元のパスをそのまま
-    返す（コンソールが開く挙動を維持しつつ、実行不能にはしない）。
+    タスクスケジューラーが `uv.exe`（コンソールサブシステム）を起動すると
+    実行のたびにコマンドプロンプトの黒いウィンドウが一瞬表示される。同じ
+    `uv` に同梱される `uvw.exe`（GUIサブシステム、標準入出力を持たない）が
+    PATH上にあれば、それに差し替えることでサイレント実行にできる。
+    見つからない場合は `uv.exe` にフォールバックする（コンソールが開く
+    挙動を維持しつつ、実行不能にはしない）。
     """
-    python_path = Path(python_exe)
-    windowed_path = python_path.with_name("pythonw.exe")
-    if windowed_path.exists():
-        return str(windowed_path)
-    return python_exe
+    uvw_path = which("uvw")
+    if uvw_path:
+        return uvw_path
+    uv_path = which("uv")
+    if uv_path:
+        return uv_path
+    raise RuntimeError("uv（または uvw）が見つかりません。PATHにuvをインストールしてください。")
+
+
+def build_uv_run_arguments(project_root: Path, script_path: str) -> str:
+    """`uv run --project <root> python "<script>"` の引数文字列を組み立てる。"""
+    return f'run --project "{project_root}" python "{script_path}"'
 
 
 def install_task(
     task_name: str,
     script_path: str,
     repetition_interval: str,
-    python_exe: str,
+    command: str,
     project_root: Path,
     xml_dir: Path,
     run_command: Callable[[list[str]], subprocess.CompletedProcess],
 ) -> None:
     xml_body = build_task_xml(
-        python_exe=python_exe,
-        script_path=script_path,
+        command=command,
+        arguments=build_uv_run_arguments(project_root, script_path),
         working_directory=str(project_root),
         start_boundary=DEFAULT_START_BOUNDARY,
         repetition_interval=repetition_interval,
@@ -68,19 +77,22 @@ def install_task(
         raise RuntimeError(f"タスク登録に失敗しました: {task_name}\n{result.stderr}")
 
 
-def install_all(project_root: Path, python_exe: str, run_command: Optional[Callable] = None) -> None:
+def install_all(
+    project_root: Path,
+    command: str,
+    run_command: Optional[Callable] = None,
+) -> None:
     if run_command is None:
         def run_command(cmd: list[str]) -> subprocess.CompletedProcess:
             return subprocess.run(cmd, capture_output=True, text=True)
 
     xml_dir = project_root / "logs" / "task_xml"
-    silent_python_exe = resolve_silent_python_executable(python_exe)
     for task in task_definitions(project_root):
         install_task(
             task_name=task["name"],
             script_path=task["script_path"],
             repetition_interval=task["repetition_interval"],
-            python_exe=silent_python_exe,
+            command=command,
             project_root=project_root,
             xml_dir=xml_dir,
             run_command=run_command,
@@ -89,6 +101,10 @@ def install_all(project_root: Path, python_exe: str, run_command: Optional[Calla
 
 def main() -> None:
     project_root = Path(__file__).resolve().parent.parent.parent
-    python_exe = sys.executable
-    install_all(project_root, python_exe)
+    command = resolve_uv_executable()
+    install_all(project_root, command)
     print("タスクスケジューラーへの登録が完了しました。")
+
+
+if __name__ == "__main__":
+    main()

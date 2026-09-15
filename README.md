@@ -4,20 +4,18 @@ Windowsタスクスケジューラーに駆動される、常駐なしの作業�
 
 ## セットアップ
 
-1. Python 3.11以上をインストールする
-2. 仮想環境を作成し、依存関係をインストールする
+1. [uv](https://docs.astral.sh/uv/) をインストールし、`uv` / `uvw` コマンドが使える状態にする
+2. 依存関係を同期する（初回は `.venv` が自動作成される）
 
    ```bash
-   python -m venv .venv
-   .venv\Scripts\activate
-   pip install -r requirements-dev.txt
+   uv sync
    ```
 
 3. [Claude Code CLI](https://docs.claude.com/) をインストールし、`claude` コマンドが使える状態にする（`prompt.py` が `claude -p ... --model haiku` を呼び出す）
 4. タスクスケジューラーにタスクを登録する
 
    ```bash
-   python install_tasks.py
+   uv run python install_tasks.py
    ```
 
    これにより以下の2つのタスクが登録される。
@@ -27,9 +25,12 @@ Windowsタスクスケジューラーに駆動される、常駐なしの作業�
 
    いずれも多重起動時は新規開始しない（`MultipleInstancesPolicy=IgnoreNew`）。
 
-   タスク実行時にコマンドプロンプトの黒いウィンドウが表示されないよう、登録時に同じ場所の
-   `pythonw.exe`（存在する場合）へ自動的に差し替える。`prompt.py` から呼び出す `claude -p`
-   サブプロセスも `CREATE_NO_WINDOW` フラグ付きで起動するため、コンソールは開かない。
+   タスクは `uv run --project <このプロジェクト> python "<script>.py"` を実行するよう登録される。
+   依存関係は `pyproject.toml` / `uv.lock` でuvが一元管理し、`uv sync` 済みならタスク実行時に
+   追加の解決は発生しない。コマンドプロンプトの黒いウィンドウが表示されないよう、登録時に
+   PATH上の `uvw.exe`（GUIサブシステム、`uv.exe` と同梱）を優先して使う。見つからない場合は
+   `uv.exe` にフォールバックする。`prompt.py` から呼び出す `claude -p` サブプロセスも
+   `CREATE_NO_WINDOW` フラグ付きで起動するため、コンソールは開かない。
 
 ## データ
 
@@ -143,11 +144,11 @@ pytest -v
 
 ## 手動検証チェックリスト（自動テスト対象外の項目）
 
-- [ ] `python monitor.py` を実行し、`data/YYYY/MM/DD/audit.parquet` に1行追記されることを確認する
-- [ ] `python prompt.py` を実行し、右下に予告カウントダウンの小窓が表示され、クリックまたは30秒経過で確認ダイアログに進むことを確認する
+- [ ] `uv run python monitor.py` を実行し、`data/YYYY/MM/DD/audit.parquet` に1行追記されることを確認する
+- [ ] `uv run python prompt.py` を実行し、右下に予告カウントダウンの小窓が表示され、クリックまたは30秒経過で確認ダイアログに進むことを確認する
 - [ ] 確認ダイアログにHaikuの推定テキストが初期値として表示され、編集して確定すると `work-content.parquet` に `status=confirmed` で保存されることを確認する
 - [ ] 確認ダイアログを放置し、5分後に `status=auto_confirmed` で自動保存されることを確認する
-- [ ] `python install_tasks.py` を実行し、タスクスケジューラー（`taskschd.msc`）に2つのタスクが登録されることを確認する
+- [ ] `uv run python install_tasks.py` を実行し、タスクスケジューラー（`taskschd.msc`）に2つのタスクが登録されることを確認する
 - [ ] 登録されたタスクが平日7:00〜22:00の時間帯設定になっていることをタスクスケジューラーのGUIで確認する
 
 ## 勤怠サービス連携（ラッパー層）

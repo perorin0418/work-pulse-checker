@@ -42,8 +42,8 @@ TASK_XML_TEMPLATE = """<Task version="1.2" xmlns="http://schemas.microsoft.com/w
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>{python_exe}</Command>
-      <Arguments>&quot;{script_path}&quot;</Arguments>
+      <Command>{command}</Command>
+      <Arguments>{arguments}</Arguments>
       <WorkingDirectory>{working_directory}</WorkingDirectory>
     </Exec>
   </Actions>
@@ -51,16 +51,22 @@ TASK_XML_TEMPLATE = """<Task version="1.2" xmlns="http://schemas.microsoft.com/w
 
 
 def build_task_xml(
-    python_exe: str,
-    script_path: str,
+    command: str,
+    arguments: str,
     working_directory: str,
     start_boundary: str,
     repetition_interval: str,
     repetition_duration: str = DEFAULT_REPETITION_DURATION,
 ) -> str:
+    """タスクスケジューラー登録用のXMLを組み立てる。
+
+    `command` は実行ファイル（例: `uvw.exe` のフルパス）、`arguments` は
+    そのコマンドに渡す引数をそのまま文字列で渡す（呼び出し側で必要な
+    クオートを済ませておくこと。例: `run --project "C:\\proj" python "monitor.py"`）。
+    """
     return TASK_XML_TEMPLATE.format(
-        python_exe=python_exe,
-        script_path=script_path,
+        command=command,
+        arguments=arguments,
         working_directory=working_directory,
         start_boundary=start_boundary,
         repetition_interval=repetition_interval,

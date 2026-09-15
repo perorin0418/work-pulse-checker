@@ -45,8 +45,8 @@ def test_task_xml_uses_shared_duration():
     from workpulse.task_xml import build_task_xml
 
     xml = build_task_xml(
-        python_exe="python.exe",
-        script_path="monitor.py",
+        command="uvw.exe",
+        arguments='run --project "." python "monitor.py"',
         working_directory=".",
         start_boundary=DEFAULT_START_BOUNDARY,
         repetition_interval="PT1M",

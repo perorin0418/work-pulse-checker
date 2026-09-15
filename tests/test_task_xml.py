@@ -7,8 +7,8 @@ NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
 
 def _build_sample_xml() -> str:
     return build_task_xml(
-        python_exe="C:\\venv\\Scripts\\python.exe",
-        script_path="C:\\work-pulse-checker\\rebuild\\monitor.py",
+        command="C:\\uv\\uvw.exe",
+        arguments='run --project "C:\\work-pulse-checker\\rebuild" python "C:\\work-pulse-checker\\rebuild\\monitor.py"',
         working_directory="C:\\work-pulse-checker\\rebuild",
         start_boundary="2026-01-01T07:00:00",
         repetition_interval="PT1M",
@@ -39,7 +39,7 @@ def test_build_task_xml_prevents_multiple_instances():
 def test_build_task_xml_sets_action_command():
     root = ET.fromstring(_build_sample_xml())
     exec_node = root.find("t:Actions/t:Exec", NS)
-    assert exec_node.find("t:Command", NS).text == "C:\\venv\\Scripts\\python.exe"
+    assert exec_node.find("t:Command", NS).text == "C:\\uv\\uvw.exe"
     assert "monitor.py" in exec_node.find("t:Arguments", NS).text
     assert exec_node.find("t:WorkingDirectory", NS).text == "C:\\work-pulse-checker\\rebuild"
 
