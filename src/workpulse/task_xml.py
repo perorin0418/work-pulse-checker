@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from workpulse.schedule import DEFAULT_REPETITION_DURATION
+
 TASK_XML_TEMPLATE = """<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
     <CalendarTrigger>
@@ -54,7 +56,7 @@ def build_task_xml(
     working_directory: str,
     start_boundary: str,
     repetition_interval: str,
-    repetition_duration: str = "PT15H",
+    repetition_duration: str = DEFAULT_REPETITION_DURATION,
 ) -> str:
     return TASK_XML_TEMPLATE.format(
         python_exe=python_exe,

@@ -5,11 +5,11 @@ import sys
 from pathlib import Path
 from typing import Callable, Optional
 
+from workpulse.schedule import DEFAULT_START_BOUNDARY
 from workpulse.task_xml import build_task_xml, write_task_xml_file
 
 MONITOR_TASK_NAME = "WorkPulseChecker_Monitor"
 PROMPT_TASK_NAME = "WorkPulseChecker_Prompt"
-DEFAULT_START_BOUNDARY = "2026-01-01T07:00:00"
 
 
 def task_definitions(project_root: Path) -> list[dict]:
