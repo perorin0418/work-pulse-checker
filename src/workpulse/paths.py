@@ -36,3 +36,8 @@ def screenshot_dir(d: date) -> Path:
 
 def screenshot_path(dt: datetime) -> Path:
     return screenshot_dir(dt.date()) / f"{dt.strftime('%H%M')}.png"
+
+
+def finished_marker_path(d: date) -> Path:
+    """業務終了ボタンを押した日に作る目印ファイル。あれば自動収集を止める。"""
+    return data_dir_for_date(d) / "finished"

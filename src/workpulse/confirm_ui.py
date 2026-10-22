@@ -23,11 +23,13 @@ def run_confirm_dialog(
     predicted_text: str,
     timeout_seconds: int = 300,
     history: list[str] | None = None,
-) -> tuple[str, str]:
+) -> tuple[str, str, bool]:
     """作業内容確認ダイアログを表示する。GUI依存のため自動テスト対象外(手動検証のみ)。
 
     history には本日すでに確定済みの作業内容（新しい順、重複除去済み）を渡す。
     各項目はボタンとして表示され、クリックすると入力欄にそのテキストが入る。
+    戻り値は (作業内容, status, 業務終了か)。「業務終了」ボタンは今の入力内容を
+    確定したうえで、その日の自動収集を止める。
     """
     import tkinter as tk
     from tkinter import ttk
@@ -51,7 +53,7 @@ def run_confirm_dialog(
     history = history or []
     history_rows = chunk_history_into_rows(history, items_per_row=3)
 
-    result: dict = {"text": predicted_text, "status": "auto_confirmed"}
+    result: dict = {"text": predicted_text, "status": "auto_confirmed", "finish": False}
 
     root = tk.Tk()
     apply_tk_scaling(root)
@@ -134,14 +136,17 @@ def run_confirm_dialog(
                     command=lambda item=item: use_history_text(item),
                 ).pack(side="left", padx=(0, 6))
 
-    def on_confirm() -> None:
+    def on_confirm(finish: bool = False) -> None:
         text, status = determine_result(True, entry.get("1.0", "end").strip(), predicted_text)
-        result["text"], result["status"] = text, status
+        result["text"], result["status"], result["finish"] = text, status, finish
         root.destroy()
 
     button_row = tk.Frame(container, bg=COLOR_BG)
     button_row.grid(row=next_row, column=0, sticky="e", pady=(4, 0))
-    ttk.Button(button_row, text="確定", style="Modern.TButton", command=on_confirm).pack()
+    ttk.Button(
+        button_row, text="業務終了", style="History.TButton", command=lambda: on_confirm(True)
+    ).pack(side="left", padx=(0, 8))
+    ttk.Button(button_row, text="確定", style="Modern.TButton", command=on_confirm).pack(side="left")
 
     # DPIスケーリング適用後の実測サイズでウィンドウサイズを決める。
     # 固定ピクセル値のgeometryを使うと、高DPI環境でウィジェットの要求サイズが
@@ -161,4 +166,4 @@ def run_confirm_dialog(
     root.protocol("WM_DELETE_WINDOW", on_confirm)
     root.mainloop()
 
-    return result["text"], result["status"]
+    return result["text"], result["status"], result["finish"]

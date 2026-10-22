@@ -11,7 +11,7 @@ from workpulse.detail_code import classify_detail_code
 from workpulse.job_code import classify_job_code
 from workpulse.parquet_io import read_or_empty
 from workpulse.paths import WORK_CONTENT_COLUMNS, work_content_path
-from workpulse.schedule import active_hours
+from workpulse.schedule import BREAK_TEXT, active_hours
 
 # 日報管理アプリへ転記する際の入力項目。作業内容(confirmed_text)と作業時間(duration)
 # 以外は自動入力できないため空文字で埋める。業務種別のみ固定値「直接原価」を入れる。
@@ -168,13 +168,14 @@ def format_duration(duration: pd.Timedelta) -> str:
 
 
 def compute_work_summary(df: pd.DataFrame) -> list[tuple[str, pd.Timedelta]]:
-    """confirmed_text ごとの合計実施時間を、実施時間が長い順に返す。"""
+    """confirmed_text ごとの合計実施時間を、実施時間が長い順に返す。休憩は除く。"""
     if df.empty:
         return []
 
     work = df.copy()
     work["confirmed_text"] = work["confirmed_text"].fillna("").astype(str).str.strip()
-    work = work[work["confirmed_text"] != ""]
+    # 休憩は作業ではないので、サマリー・日報には含めない。
+    work = work[(work["confirmed_text"] != "") & (work["confirmed_text"] != BREAK_TEXT)]
     if work.empty:
         return []
 
