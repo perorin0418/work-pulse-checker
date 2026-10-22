@@ -15,6 +15,7 @@ from workpulse.activity import (
 )
 from workpulse.parquet_io import append_row
 from workpulse.paths import AUDIT_COLUMNS, audit_path
+from workpulse.workday import is_finished
 
 
 def collect_and_append(now: datetime, active: ActiveWindowInfo, idle_seconds: int) -> None:
@@ -29,6 +30,8 @@ def collect_and_append(now: datetime, active: ActiveWindowInfo, idle_seconds: in
 
 def run() -> None:
     now = datetime.now()
+    if is_finished(now.date()):
+        return
     active = read_active_window(
         win32_get_foreground_hwnd, win32_get_window_text, win32_get_process_name_for_hwnd
     )

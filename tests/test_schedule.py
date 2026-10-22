@@ -59,3 +59,22 @@ def test_view_cli_blank_range_matches_schedule():
     from workpulse.view_cli import DEFAULT_BLANK_END_HOUR, DEFAULT_BLANK_START_HOUR
 
     assert (DEFAULT_BLANK_START_HOUR, DEFAULT_BLANK_END_HOUR) == active_hours()
+
+
+@pytest.mark.parametrize(
+    "start,end,expected",
+    [
+        ((11, 30), (12, 0), False),
+        ((12, 0), (12, 30), True),
+        ((12, 30), (13, 0), True),
+        ((13, 0), (13, 30), False),
+        ((17, 0), (17, 30), False),
+        ((17, 30), (18, 0), True),
+    ],
+)
+def test_is_break_slot(start, end, expected):
+    from datetime import datetime
+
+    from workpulse.schedule import is_break_slot
+
+    assert is_break_slot(datetime(2026, 8, 26, *start), datetime(2026, 8, 26, *end)) is expected

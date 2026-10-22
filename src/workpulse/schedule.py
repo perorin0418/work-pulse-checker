@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, time
 
 #: タスク登録時の開始日時。日付部分は「いつから有効か」を表すだけで、
 #: 毎日の開始時刻は時刻部分（07:00）が決める。
@@ -44,3 +45,18 @@ def active_hours(
 ) -> tuple[int, int]:
     """稼働時間帯を (開始時, 終了時) で返す。既定は (7, 22)。"""
     return start_hour(start_boundary), end_hour(start_boundary, duration)
+
+
+#: 休憩時間帯 (開始, 終了)。この時間に収まる30分枠は自動で「休憩」を記録する。
+BREAK_PERIODS = [(time(12, 0), time(13, 0)), (time(17, 30), time(18, 0))]
+
+#: 休憩枠に自動入力する作業内容。
+BREAK_TEXT = "休憩"
+
+
+def is_break_slot(slot_start: datetime, slot_end: datetime) -> bool:
+    """枠が休憩時間帯に完全に収まっていれば True。"""
+    return any(
+        start <= slot_start.time() and slot_end.time() <= end
+        for start, end in BREAK_PERIODS
+    )

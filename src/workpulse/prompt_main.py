@@ -12,8 +12,10 @@ from workpulse.countdown_ui import run_countdown_window
 from workpulse.haiku import predict_work_content
 from workpulse.parquet_io import append_row, read_or_empty
 from workpulse.paths import AUDIT_COLUMNS, WORK_CONTENT_COLUMNS, audit_path, work_content_path
+from workpulse.schedule import BREAK_TEXT, is_break_slot
 from workpulse.screenshot import capture_png_bytes_mss, try_save_screenshot
 from workpulse.work_history import recent_confirmed_texts
+from workpulse.workday import is_finished, mark_finished
 
 
 def slot_bounds(now: datetime) -> tuple[datetime, datetime]:
@@ -49,7 +51,15 @@ def build_work_content_row(
 
 def run() -> None:
     now = datetime.now()
+    if is_finished(now.date()):
+        return
     slot_start, slot_end = slot_bounds(now)
+
+    # 休憩時間の枠は確認せず、自動で「休憩」を記録する。
+    if is_break_slot(slot_start, slot_end):
+        row = build_work_content_row(slot_start, slot_end, "", BREAK_TEXT, "break", None)
+        append_row(work_content_path(now.date()), row, WORK_CONTENT_COLUMNS)
+        return
 
     # スクリーンショット撮影とAI推定(Haiku)を先に完了させてから、
     # ユーザーへの30秒カウントダウンを開始する。Haikuの応答が30秒を
@@ -70,12 +80,15 @@ def run() -> None:
 
     run_countdown_window(30)
 
-    confirmed_text, status = run_confirm_dialog(
+    confirmed_text, status, finish_work = run_confirm_dialog(
         predicted_text, timeout_seconds=300, history=today_history
     )
 
     row = build_work_content_row(slot_start, slot_end, predicted_text, confirmed_text, status, shot_path)
     append_row(work_content_path(now.date()), row, WORK_CONTENT_COLUMNS)
+
+    if finish_work:
+        mark_finished(now.date())
 
 
 def main() -> None:

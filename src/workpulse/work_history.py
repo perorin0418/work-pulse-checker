@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date
 
 from workpulse.parquet_io import read_or_empty
+from workpulse.schedule import BREAK_TEXT
 from workpulse.paths import WORK_CONTENT_COLUMNS, work_content_path
 
 
@@ -24,7 +25,7 @@ def recent_confirmed_texts(target_date: date, limit: int = 8) -> list[str]:
     result: list[str] = []
     for text in ordered["confirmed_text"]:
         text = (text or "").strip()
-        if not text or text in seen:
+        if not text or text == BREAK_TEXT or text in seen:
             continue
         seen.add(text)
         result.append(text)

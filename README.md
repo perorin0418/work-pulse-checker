@@ -397,3 +397,14 @@ python edit_report.py --date 2026-09-11 --summary  # サマリーのみ表示
 `--date` を明示した場合は日付を聞かない。空入力なら前営業日を使う。
 
 運用の流れは「`edit_report.bat` で内容を整える → `submit_report.bat` で登録」。
+
+## 休憩の自動入力と業務終了
+
+- 12:00〜13:00 と 17:30〜18:00 に収まる30分枠は、確認ダイアログを出さずに
+  `work-content.parquet` へ作業内容「休憩」・`status=break` で自動記録する。
+  「休憩」はサマリーと日報（`--daily-report-json`）には含めない。
+  時間帯は `schedule.py` の `BREAK_PERIODS` で変更できる。
+- 業務終了: 確認ダイアログの「業務終了」ボタン（入力内容を確定してから終了）、
+  または `end_work.bat` のダブルクリックで、その日の `data/YYYY/MM/DD/finished` を作る。
+  以降その日は `monitor.py` / `prompt.py` が何も収集せずに終了する。翌日は自動で再開する。
+  再開したい場合は `finished` ファイルを削除する。
