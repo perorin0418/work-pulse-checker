@@ -162,7 +162,9 @@ def run_confirm_dialog(
         root.destroy()
 
     root.after(timeout_seconds * 1000, on_timeout)
-    root.bind("<Return>", lambda event: on_confirm())
+    # 誤操作で確定しないよう、Enterでは確定せず改行も入れない。確定はボタンのみ。
+    entry.bind("<Return>", lambda event: "break")
+    entry.bind("<KP_Enter>", lambda event: "break")
     root.protocol("WM_DELETE_WINDOW", on_confirm)
     root.mainloop()
 
