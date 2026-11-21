@@ -1,5 +1,5 @@
 @echo off
-rem Daily report submitter. Double-click to run; it asks for the target date.
+rem Daily report submitter. Double-click to run; it asks for the target date or range (YYYY-MM-DD~YYYY-MM-DD).
 setlocal
 cd /d "%~dp0"
 

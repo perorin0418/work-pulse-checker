@@ -1,10 +1,11 @@
 # src/workpulse/attendance/cli.py
 """日報登録の CLI。
 
-`submit_report.bat` から呼ばれる想定。指定日の作業記録
+`submit_report.bat` から呼ばれる想定。指定日（または期間）の作業記録
 （`view.py --daily-report-json` と同じ9項目）を勤怠サービスへ登録する。
 
     python submit_report.py --date 2026-09-11
+    python submit_report.py --date 2026-09-07~2026-09-11
     python submit_report.py --date 2026-09-11 --dry-run
     python submit_report.py --date 2026-09-11 --json records.json
 
@@ -21,10 +22,16 @@ from pathlib import Path
 from workpulse.attendance.models import DailyReport
 from workpulse.attendance.report_format import rows_from_records
 
+# 期間指定の区切り。全角は IME で打ったときのため。
+RANGE_SEPARATORS = ("~", "～", "〜")
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="指定日の作業記録を勤怠サービスの日報に登録する")
-    parser.add_argument("--date", help="YYYY-MM-DD（省略時は対話で入力）")
+    parser.add_argument(
+        "--date",
+        help="YYYY-MM-DD、または期間 YYYY-MM-DD~YYYY-MM-DD（省略時は対話で入力）",
+    )
     parser.add_argument(
         "--json",
         dest="json_path",
@@ -49,7 +56,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def resolve_date(text: str | None, input_func=input, today: date | None = None) -> date:
-    """日付を決める。未指定なら対話で聞く。
+    """1日分の日付を決める（`edit_report` 用）。未指定なら対話で聞く。
 
     空入力なら前営業日（月曜なら金曜、それ以外は前日）を使う。
     """
@@ -62,6 +69,50 @@ def resolve_date(text: str | None, input_func=input, today: date | None = None) 
     if not answer:
         return default
     return date.fromisoformat(answer)
+
+
+def parse_date_range(text: str) -> tuple[date, date]:
+    """`YYYY-MM-DD` または `YYYY-MM-DD~YYYY-MM-DD` を (開始日, 終了日) にする。
+
+    形式の誤りや、開始日が終了日より後の場合は ValueError。
+    """
+    text = text.strip()
+    for sep in RANGE_SEPARATORS:
+        if sep in text:
+            start_text, end_text = text.split(sep, 1)
+            start = date.fromisoformat(start_text.strip())
+            end = date.fromisoformat(end_text.strip())
+            if start > end:
+                raise ValueError(f"開始日 {start} が終了日 {end} より後です")
+            return start, end
+    day = date.fromisoformat(text)
+    return day, day
+
+
+def resolve_range(
+    text: str | None, input_func=input, today: date | None = None
+) -> tuple[date, date]:
+    """対象期間を決める。未指定なら対話で聞く。
+
+    空入力なら前営業日（月曜なら金曜、それ以外は前日）の1日分を使う。
+    """
+    if text:
+        return parse_date_range(text)
+
+    today = today or date.today()
+    default = previous_workday(today)
+    answer = input_func(
+        "対象日を入力してください [YYYY-MM-DD、期間なら YYYY-MM-DD~YYYY-MM-DD]"
+        f" (既定: {default}): "
+    ).strip()
+    if not answer:
+        return default, default
+    return parse_date_range(answer)
+
+
+def days_between(start: date, end: date) -> list[date]:
+    """開始日から終了日まで（両端を含む）の日付を並べる。"""
+    return [start + timedelta(days=i) for i in range((end - start).days + 1)]
 
 
 def previous_workday(today: date) -> date:
@@ -108,17 +159,36 @@ def run(
     args = parse_args(argv)
 
     try:
-        target_date = resolve_date(args.date, input_func=input_func)
+        start, end = resolve_range(args.date, input_func=input_func)
     except ValueError:
-        print_func("日付の形式が正しくありません（例: 2026-09-11）")
+        print_func("日付の形式が正しくありません（例: 2026-09-11 または 2026-09-07~2026-09-11）")
         return 2
 
-    records = load_records(target_date, args.json_path)
-    if not records:
-        print_func(f"{target_date.isoformat()} に登録できる作業記録がありません")
+    days = days_between(start, end)
+    if args.json_path and len(days) > 1:
+        print_func("--json は1日分を指定したときだけ使えます")
+        return 2
+
+    # 記録の無い日（休日など）は飛ばし、残りをまとめて確認・登録する。
+    plans: list[tuple[date, list[dict[str, str]]]] = []
+    for day in days:
+        records = load_records(day, args.json_path)
+        if not records:
+            print_func(f"{day.isoformat()} に登録できる作業記録がありません")
+            continue
+        plans.append((day, records))
+
+    if not plans:
         return 1
 
-    print_func(format_preview(target_date, records))
+    for i, (day, records) in enumerate(plans):
+        if i:
+            print_func("")
+        print_func(format_preview(day, records))
+
+    if len(days) > 1:
+        listed = ", ".join(day.isoformat() for day, _ in plans)
+        print_func(f"\n登録する日: {len(plans)}日分（{listed}）")
 
     if args.dry_run:
         print_func("\n--dry-run のため登録しません")
@@ -133,15 +203,25 @@ def run(
     if open_provider_func is None:
         from workpulse.attendance.service import open_provider as open_provider_func
 
-    report = DailyReport(work_date=target_date, rows=rows_from_records(records))
+    failed: list[date] = []
     try:
         with open_provider_func() as provider:
-            result = provider.submit_report(report, replace=not args.append)
+            for day, records in plans:
+                report = DailyReport(work_date=day, rows=rows_from_records(records))
+                try:
+                    result = provider.submit_report(report, replace=not args.append)
+                except Exception as exc:  # 1日の失敗で残りの日を止めない
+                    print_func(f"登録に失敗しました: {day.isoformat()}: {type(exc).__name__}: {exc}")
+                    failed.append(day)
+                    continue
+                print_func(f"登録しました: {result.work_date} ({len(report.rows)}件)")
     except Exception as exc:  # 認証失敗・画面変更などをまとめて拾う
         print_func(f"登録に失敗しました: {type(exc).__name__}: {exc}")
         return 1
 
-    print_func(f"登録しました: {result.work_date} ({len(report.rows)}件)")
+    if failed:
+        print_func(f"失敗した日: {', '.join(day.isoformat() for day in failed)}")
+        return 1
     return 0
 
 

@@ -9,9 +9,12 @@ from datetime import date
 import pytest
 
 from workpulse.attendance.cli import (
+    days_between,
     format_preview,
+    parse_date_range,
     previous_workday,
     resolve_date,
+    resolve_range,
     run,
 )
 
@@ -91,13 +94,46 @@ def test_resolve_date_uses_argument():
     assert resolve_date("2026-09-11") == date(2026, 9, 11)
 
 
-def test_resolve_date_prompts_when_missing():
-    assert resolve_date(None, input_func=lambda _: "2026-09-11") == date(2026, 9, 11)
-
-
 def test_resolve_date_defaults_to_previous_workday():
     got = resolve_date(None, input_func=lambda _: "", today=date(2026, 9, 14))
     assert got == date(2026, 9, 11)
+
+
+def test_resolve_range_uses_argument():
+    assert resolve_range("2026-09-11") == (date(2026, 9, 11), date(2026, 9, 11))
+
+
+def test_resolve_range_prompts_when_missing():
+    got = resolve_range(None, input_func=lambda _: "2026-09-11")
+    assert got == (date(2026, 9, 11), date(2026, 9, 11))
+
+
+def test_resolve_range_defaults_to_previous_workday():
+    got = resolve_range(None, input_func=lambda _: "", today=date(2026, 9, 14))
+    assert got == (date(2026, 9, 11), date(2026, 9, 11))
+
+
+def test_resolve_range_prompt_accepts_range():
+    got = resolve_range(None, input_func=lambda _: "2026-09-07~2026-09-11")
+    assert got == (date(2026, 9, 7), date(2026, 9, 11))
+
+
+@pytest.mark.parametrize("sep", ["~", "～", "〜", " ~ "])
+def test_parse_date_range_separators(sep):
+    assert parse_date_range(f"2026-09-07{sep}2026-09-11") == (date(2026, 9, 7), date(2026, 9, 11))
+
+
+def test_parse_date_range_rejects_reversed():
+    with pytest.raises(ValueError):
+        parse_date_range("2026-09-11~2026-09-07")
+
+
+def test_days_between_includes_both_ends():
+    assert days_between(date(2026, 9, 10), date(2026, 9, 12)) == [
+        date(2026, 9, 10),
+        date(2026, 9, 11),
+        date(2026, 9, 12),
+    ]
 
 
 def test_format_preview_lists_all_fields():
@@ -237,3 +273,109 @@ def test_run_prompts_for_date_when_omitted(fake_open, json_file):
 
     assert code == 0
     assert fake_open.provider.submitted[0].work_date == date(2026, 9, 11)
+
+
+def _patch_records(monkeypatch, by_day):
+    """作業記録の読み込みを差し替える（日付 -> レコード一覧）。"""
+    from workpulse.attendance import cli
+
+    monkeypatch.setattr(cli, "load_records", lambda day, _json: by_day.get(day, []))
+
+
+def test_run_submits_range_and_skips_empty_days(fake_open, monkeypatch):
+    _patch_records(
+        monkeypatch,
+        {date(2026, 9, 11): [RECORD], date(2026, 9, 14): [RECORD, RECORD]},
+    )
+    printer = Printer()
+    code = run(
+        ["--date", "2026-09-11~2026-09-14", "--yes"],
+        print_func=printer,
+        open_provider_func=fake_open,
+    )
+
+    assert code == 0
+    submitted = fake_open.provider.submitted
+    assert [r.work_date for r in submitted] == [date(2026, 9, 11), date(2026, 9, 14)]
+    assert len(submitted[1].rows) == 2
+    assert "2026-09-12 に登録できる作業記録がありません" in printer.text
+    assert "2日分" in printer.text
+
+
+def test_run_range_asks_confirmation_once(fake_open, monkeypatch):
+    _patch_records(monkeypatch, {date(2026, 9, 10): [RECORD], date(2026, 9, 11): [RECORD]})
+    prompts = []
+
+    def answer(prompt):
+        prompts.append(prompt)
+        return "y"
+
+    code = run(
+        ["--date", "2026-09-10~2026-09-11"],
+        print_func=Printer(),
+        input_func=answer,
+        open_provider_func=fake_open,
+    )
+
+    assert code == 0
+    assert len(prompts) == 1
+    assert len(fake_open.provider.submitted) == 2
+
+
+def test_run_range_continues_after_one_day_fails(monkeypatch):
+    _patch_records(monkeypatch, {date(2026, 9, 10): [RECORD], date(2026, 9, 11): [RECORD]})
+
+    class HalfBroken(FakeProvider):
+        def submit_report(self, report, replace: bool = True):
+            if report.work_date == date(2026, 9, 10):
+                raise RuntimeError("画面が違う")
+            return super().submit_report(report, replace)
+
+    provider = HalfBroken()
+
+    @contextmanager
+    def opener():
+        yield provider
+
+    printer = Printer()
+    code = run(
+        ["--date", "2026-09-10~2026-09-11", "--yes"],
+        print_func=printer,
+        open_provider_func=opener,
+    )
+
+    assert code == 1
+    assert [r.work_date for r in provider.submitted] == [date(2026, 9, 11)]
+    assert "失敗した日: 2026-09-10" in printer.text
+
+
+def test_run_range_with_no_records_at_all(fake_open, monkeypatch):
+    _patch_records(monkeypatch, {})
+    code = run(
+        ["--date", "2026-09-12~2026-09-13", "--yes"],
+        print_func=Printer(),
+        open_provider_func=fake_open,
+    )
+
+    assert code == 1
+    assert fake_open.provider.submitted == []
+
+
+def test_run_rejects_reversed_range(fake_open):
+    printer = Printer()
+    code = run(["--date", "2026-09-11~2026-09-10"], print_func=printer, open_provider_func=fake_open)
+
+    assert code == 2
+    assert "形式" in printer.text
+
+
+def test_run_rejects_json_with_range(fake_open, json_file):
+    printer = Printer()
+    code = run(
+        ["--date", "2026-09-10~2026-09-11", "--json", json_file([RECORD])],
+        print_func=printer,
+        open_provider_func=fake_open,
+    )
+
+    assert code == 2
+    assert "--json" in printer.text
